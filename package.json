@@ -1,0 +1,27 @@
+{
+  "name": "jiajiao",
+  "version": "0.1.0",
+  "private": true,
+  "description": "家教单聚合筛选工具",
+  "workspaces": [
+    "server",
+    "web",
+    "desktop"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c cyan,magenta \"npm:dev:server\" \"npm:dev:web\"",
+    "dev:server": "npm -w server run dev",
+    "dev:web": "npm -w web run dev",
+    "build": "npm -w web run build",
+    "build:server": "node desktop/scripts/build-server.mjs",
+    "desktop": "npm -w desktop run start",
+    "desktop:pack": "npm -w desktop run pack",
+    "package": "npm run build && npm -w desktop run dist",
+    "test": "npm -w server run test",
+    "test:e2e": "node desktop/e2e/shots.mjs",
+    "test:desktop": "node desktop/e2e/electron-smoke.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

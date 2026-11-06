@@ -1,0 +1,22 @@
+{
+  "name": "server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node --env-file=../.env --watch src/index.ts",
+    "start": "node --env-file=../.env src/index.ts",
+    "test": "node src/parser/parse.test.ts && node src/match/match.test.ts && node --no-warnings src/db.test.ts && node --no-warnings src/db.migrate.test.ts && node --no-warnings src/commute/commute.test.ts && node --no-warnings src/api.test.ts && node --no-warnings src/clipboard.test.ts"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3"
+  }
+}

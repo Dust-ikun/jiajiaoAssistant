@@ -1,0 +1,70 @@
+{
+  "name": "desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/main.js",
+  "description": "家教单助手 · 桌面壳",
+  "author": "local",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build-server.mjs",
+    "start": "npm run build && electron .",
+    "dev": "npm run build && electron . --dev",
+    "pack": "npm run build && electron-builder --win --dir",
+    "dist": "npm run build && electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "45.2.3",
+    "electron-builder": "^26.18.0",
+    "esbuild": "^0.28.2",
+    "playwright-core": "^1.65.0"
+  },
+  "build": {
+    "appId": "local.jiajiao.dashboard",
+    "productName": "家教单助手",
+    "copyright": "本地自用",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/main.js",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "dist/server.mjs",
+        "to": "server/server.mjs"
+      },
+      {
+        "from": "../web/dist",
+        "to": "web"
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "shortcutName": "家教单助手",
+      "artifactName": "jiajiao-setup-${version}.${ext}"
+    },
+    "portable": {
+      "artifactName": "jiajiao-portable-${version}.${ext}"
+    }
+  }
+}
