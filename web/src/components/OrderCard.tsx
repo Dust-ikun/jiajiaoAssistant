@@ -139,6 +139,7 @@ export function OrderCard({ order, expanded, onToggle, onPatch }: Props) {
                 {t}
               </span>
             ))}
+            {o.mode === '线上' && <span className="chip bg-emerald-50 text-emerald-700">线上</span>}
             {o.statusTag && <span className="chip bg-indigo-50 text-indigo-600">{o.statusTag}</span>}
             {o.occurrences > 1 && (
               <span className="chip bg-orange-50 text-orange-600">转发 {o.occurrences}</span>
@@ -150,11 +151,14 @@ export function OrderCard({ order, expanded, onToggle, onPatch }: Props) {
             )}
           </div>
 
-          <div className="mt-1 truncate text-[12.5px] text-slate-500">{o.address ?? '地址未识别'}</div>
+          <div className="mt-1 truncate text-[12.5px] text-slate-500">
+            {o.address ?? (o.mode === '线上' ? '线上授课 · 不需要地址' : '地址未识别')}
+          </div>
 
           <div className="mt-1.5 flex flex-wrap items-center gap-x-3.5 gap-y-1 text-[12px] text-slate-500">
             {o.gradeText && <span className="text-slate-600">{o.gradeText}</span>}
-            {o.mode && <span>{o.mode}</span>}
+            {/* 线上已经在标题行有标签，这里不再重复 */}
+            {o.mode && o.mode !== '线上' && <span>{o.mode}</span>}
             {o.freqPerWeek ? <span>每周 {o.freqPerWeek} 次</span> : null}
             {o.hoursPerSession ? <span>每次 {o.hoursPerSession}h</span> : null}
             {o.orderNo && <span className="font-mono text-[11px] text-slate-400">#{o.orderNo}</span>}

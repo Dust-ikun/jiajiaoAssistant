@@ -730,6 +730,7 @@ export function countCommuteReady(): number {
 export interface CommuteCandidate {
   id: number;
   address: string | null;
+  mode: string | null;
   commuteStatus: string | null;
   commuteCheckedAt: string | null;
   commuteAddress: string | null;
@@ -742,12 +743,14 @@ export function listCommuteCandidates(input: { originId: number; failedBefore: s
     .prepare(
       `SELECT id,
               address,
+              mode,
               commute_status    AS commuteStatus,
               commute_checked_at AS commuteCheckedAt,
               commute_address   AS commuteAddress,
               commute_origin_id AS commuteOriginId
          FROM orders
         WHERE address IS NOT NULL AND address <> ''
+          AND COALESCE(mode, '') <> '线上'
           AND (
             commute_status IS NULL
             OR commute_status <> 'ok'
@@ -761,13 +764,17 @@ export function listCommuteCandidates(input: { originId: number; failedBefore: s
     .all(input.originId, input.failedBefore, limit) as unknown as CommuteCandidate[];
 }
 
-/** 有地址、但还没算出通勤的单子数：后端据此告诉界面「还有 N 单在算」 */
+/**
+ * 有地址、但还没算出通勤的单子数：后端据此告诉界面「还有 N 单在算」。
+ * 线上单不算 —— 它永远不会被算，计进来只会让状态条一直挂着一句「还有 N 单没算」。
+ */
 export function countCommutePending(): number {
   return (
     db
       .prepare(
         `SELECT COUNT(*) AS n FROM orders
          WHERE address IS NOT NULL AND address <> ''
+           AND COALESCE(mode, '') <> '线上'
            AND (commute_status IS NULL OR commute_status = 'failed')`,
       )
       .get() as { n: number }

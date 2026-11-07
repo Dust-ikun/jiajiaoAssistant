@@ -245,6 +245,8 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
   /** 这条单子现在需要（重新）算吗？*/
   function needsWork(order: CommuteCandidate, originId: number): boolean {
     if (!order.address) return false;
+    // 线上授课没有通勤可言：不占配额、不算「还没算」，也不该出现在通勤排序里
+    if (order.mode === '线上') return false;
     if (order.commuteStatus === 'failed') {
       const checked = order.commuteCheckedAt ? new Date(order.commuteCheckedAt).getTime() : 0;
       if (checked && now().getTime() - checked < FAILED_COOLDOWN_MS) return false;

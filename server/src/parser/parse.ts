@@ -543,8 +543,18 @@ function detectGender(text: string): '男' | '女' | null {
   return null;
 }
 
+/**
+ * 授课形式。
+ *
+ * 【线上为什么要求「独立词」】原来只要出现「线上」两个字就算线上单。这很危险：
+ * 线上单不再算通勤，一个地名里带「线上」的线下单（比如「××线上城小区」）会被判成线上，
+ * 于是**永远不算通勤且悄无声息** —— 漏算比算错更难发现。
+ * 所以要求它出现在分隔符之后/行首，并且后面紧跟分隔符或「授课/上课/辅导」这类词。
+ */
 function detectMode(text: string): Mode | null {
-  if (/线上|网课|网络课|视频课|在线授课/.test(text)) return '线上';
+  if (/(?:^|[\s【】\[\]()（）：:、,，。;；#＃])(?:线上|网课|网络课|视频课|在线|腾讯会议|钉钉)(?=$|[\s【】\[\]()（）：:、,，。;；#＃]|授课|上课|教学|辅导)/.test(text)) {
+    return '线上';
+  }
   if (/上门|线下/.test(text)) return '上门';
   if (/机构|校区/.test(text)) return '机构';
   return null;
@@ -759,7 +769,20 @@ export function buildOrder(block: RawBlock): ParsedOrder | null {
 
   const orderNo = normalizeOrderNo(block.anchor?.orderNo ?? fields.orderNo ?? '') || null;
   // `【辅导地址】#海珠区…` / `【辅导地址】】#白云区…`：值前面常带 # 或多余的右括号，都不属于地址
-  const address = fields.address?.replace(/^[】\]#＃\s]+/, '').trim() || null;
+  const addressRaw = fields.address?.replace(/^[】\]#＃\s]+/, '').trim() || null;
+
+  /**
+   * 地址栏里只写了「线上」的情况（真实数据里不止一条）：那**不是地址**，是授课形式。
+   *
+   * 【为什么必须在这里剥掉】把它当地址留着，通勤就会去地理编码一个叫「线上」的地方：
+   * 高德要么给一个莫名其妙（通常在市区某栋楼）的坐标，要么直接 30001。这样算出来的通勤
+   * 是错的，而界面上完全看不出来 —— 比「无地址」危险得多。空着比错着好。
+   * 顺带把 mode 定成「线上」，通勤侧据此直接跳过（不占配额，也不算「还没算出通勤」）。
+   */
+  const ONLINE_ONLY = /^(线上|网课|网络课|视频课|在线|线上授课|网课授课|腾讯会议|钉钉)(授课|上课|辅导|教学)?$/;
+  const onlineAddress = addressRaw ? ONLINE_ONLY.test(addressRaw) : false;
+  const address = onlineAddress ? null : addressRaw;
+
   const district = detectDistrict(address ?? '', block.regionHint);
   const gradeText = [fields.grade, fields.studentInfo].filter(Boolean).join(' ').trim() || null;
   const subjectText = fields.subjects ?? '';
@@ -786,6 +809,9 @@ export function buildOrder(block: RawBlock): ParsedOrder | null {
     (/女/.test(genderText) ? '女' : /男/.test(genderText) ? '男' : null) ??
     detectGender(`${gradeText ?? ''} ${fields.studentInfo ?? ''}`);
 
+  /** 地址写着「线上」→ 形式是线上；否则照常从全文里认（`#线上`、`网课` 都算） */
+  const mode: Mode | null = onlineAddress ? '线上' : detectMode(all);
+
   const warnings: string[] = [];
   if (!orderNo) warnings.push('未识别到家教编号');
   if (!salaryRaw) warnings.push('未识别到薪水');
@@ -793,7 +819,8 @@ export function buildOrder(block: RawBlock): ParsedOrder | null {
   else if (!sal.unit) warnings.push('薪水单位不明确，无法折算时薪');
   else if (salaryHourly === null) warnings.push('缺少频次或时长，无法折算时薪');
   if (!subjects.length) warnings.push('未识别到科目');
-  if (!district) warnings.push('未识别到区域');
+  // 线上单本来就没有区域，别让它因为「缺区域」掉置信度
+  if (!district && mode !== '线上') warnings.push('未识别到区域');
   // T5 的 #1045 被截断就是这个信号：有编号有薪资，但没有要求
   if (!fields.teacherReq) warnings.push('缺少老师要求');
 
@@ -820,7 +847,7 @@ export function buildOrder(block: RawBlock): ParsedOrder | null {
     gradeText,
     studentCount: detectCount(`${gradeText ?? ''} ${fields.studentInfo ?? ''}`),
     studentGender,
-    mode: detectMode(all),
+    mode,
     subjects,
     subjectTags,
     freqPerWeek,

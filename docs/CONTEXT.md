@@ -263,7 +263,7 @@ ZXGZ20261104.1
 | `server/src/parser/dict.ts` | 字段别名（按六模板扩容）、广州+佛山各区、15 学科、25 标签、中文数字 | **已完成** |
 | `server/src/parser/parse.ts` | 锚点池 6 条 + 通用字段语法 + 噪声闸门 + 时间游标 + 分档薪水 + 时薪折算 | **六模板全通** |
 | `server/src/parser/samples/t1~t6.txt` | 六套模板原文（逐字取自本文件第 3 节） | **已落盘** |
-| `server/src/parser/parse.test.ts` | 159 条断言，覆盖 T1~T6 | **已跑通，全绿** |
+| `server/src/parser/parse.test.ts` | 191 条断言，覆盖 T1~T6 + 现场样本 + 线上单识别 | **已跑通，全绿** |
 | `server/src/profile.ts` | 「我的资质」schema + `data/profile.json` 读写 + 校验 | **已完成，可改** |
 | `server/src/match/requirements.ts` | 老师要求 → 结构化条件（含 hard/soft 与 evidence） | **已完成** |
 | `server/src/match/match.ts` | 三态判定（可接/存疑/不可接） | **已完成** |
@@ -276,7 +276,7 @@ ZXGZ20261104.1
 | `server/src/commute/cache.ts` | `commute_cache`/`geo_cache`/`api_usage` 三表、缓存键、出发时刻锚点、日配额 | **已完成** |
 | `server/src/commute/queue.ts` | 串行队列（**400ms** 间隔）、重试 1 次、配额撞墙即停 | **已完成** |
 | `server/src/commute/service.ts` | 编排：按需入队、geo/plan 双层缓存、落库、`blockedBy` 状态 | **已完成** |
-| `server/src/commute/commute.test.ts` | 72 条断言：假 provider 端到端，零真实配额 | **已跑通，全绿** |
+| `server/src/commute/commute.test.ts` | 82 条断言：假 provider 端到端、零真实配额；含「队列断粮」与「线上单不参与」回归 | **已跑通，全绿** |
 | `server/src/api.ts` | health / import / orders（按需入队）/ **通勤方案详情** / **commute status** / **origins CRUD** / profile | **已跑起来验证过** |
 | `server/src/api.test.ts` | **新增**。HTTP 层回归 29 条：出发点默认/改址清坐标/删除顶替、资质 400 与落盘读回、导入体检、列表降级与 blockedBy | **已跑通，全绿** |
 | `server/src/index.ts` | 8787，有 `web/dist` 则托管；启动时报告 key / 出发点 / 配额上限 | **已跑起来验证过** |
@@ -318,7 +318,7 @@ ZXGZ20261104.1
 - 六套回归**仍然不需要任何依赖** —— Node 24 原生剥离类型：
 
   ```
-  npm test   # parse(183) + match(60) + db(37) + db.migrate(21) + commute(77) + api(29) + clipboard(30) = 437 项
+  npm test   # parse(191) + match(60) + db(37) + db.migrate(21) + commute(82) + api(29) + clipboard(30) = 450 项
   ```
 
 - 桌面壳（阶段 8）的四个入口：
@@ -364,7 +364,7 @@ ZXGZ20261104.1
   `desktop/e2e/{shots,electron-smoke}.mjs`；`web/App.tsx` 空库首屏改成两步引导并隐藏重复的通勤提示条；
   `server/index.ts` 允许 `JIAJIAO_WEB_DIST` 覆盖静态目录；
   产出 `jiajiao-setup-0.1.0.exe` / `jiajiao-portable-0.1.0.exe`（未签名）；
-  回归从 368 项涨到 437 项（剪贴板 30 项是更早一轮加的；阶段 8 之后补了 5 条「队列断粮」的回归）
+  回归从 368 项涨到 450 项（剪贴板 30 项是更早一轮加的；阶段 8 之后补了「队列断粮」与「线上单不参与通勤」两组回归）
 
 - **2026-11-06 阶段 7 那次会话改了什么**（纯前端 + 一处接口 bug）：
   新增设置抽屉四件套（`SettingsDrawer` + `settings/{ProfileForm,OriginList,CommutePanel,bits}`）、
@@ -469,7 +469,7 @@ ZXGZ20261104.1
 | 2 | **parser-regression** | 六套模板样本文件 + 逐条断言，全绿 | ✅ 159 项全绿 |
 | 3 | **requirements-match** | 要求结构化 + 我的资质 + 三态判定 | ✅ 56 项全绿（资质已落盘） |
 | 4 | **db-migrate** | 扩表迁移、`sent_at`、分档薪水、增量补全、导入诊断 | ✅ 52 项全绿（31 + 21） |
-| 5 | **commute-service** | 高德公交多方案、缓存、按需队列、配额保护 | ✅ 77 项全绿（假 provider，含队列断粮回归） |
+| 5 | **commute-service** | 高德公交多方案、缓存、按需队列、配额保护 | ✅ 82 项全绿（假 provider，含队列断粮/线上单回归） |
 | 6 | **ui-rework** | 卡片与筛选栏改造 | ✅ 已构建并在本机跑通 |
 | 7 | **ui-settings-import** | 设置抽屉 + 导入体检面板 | ✅ 界面已跑通并截图验证（+ api 回归 29 项） |
 | 8 | **desktop-verify** | Electron 壳 + 打包 + playwright 端到端截图 | ✅ 安装包已构建，源码版/打包版冒烟通过 |
@@ -576,6 +576,10 @@ CommuteProvider ── AmapProvider
 - **出发时刻固定「下一个工作日 08:00」并进缓存键**，否则每天算出的数不可比
 - 按需计算：**每次 `GET /api/orders` 从全库待算集合里取前 30 条入队**（`db.listCommuteCandidates`）。
   入队源**不得**用当前页 —— 按通勤排序时那一页只有已算完的单子，用它会永远入队 0 条（第 6 节第 22 条）
+- **线上单不算通勤**：解析层把「地址只写 线上/网课」剥成 `mode='线上'` 并清空 `address`
+  （否则高德会去地理编码一个叫「线上」的地方，给出错坐标或 30001）；通勤侧 `needsWork` 直接跳过，
+  `countCommutePending` 也不计它 —— 否则状态条永远挂着「还有 N 单没算」。卡片显示绿色「线上」标签、
+  通勤徽标写「不用通勤」。注意 `detectMode` 对「线上」要求**独立词**，地名里带这两个字不算
 - 串行队列 400ms 间隔 + 日配额计数 + 失败重试 1 次 + 达上限提示
 - 无 key 时通勤列显示「未配置」，其余功能正常
 
@@ -741,7 +745,7 @@ Electron 自带的 Node 版本，也不该把 `express`/`cors` 所在的整棵�
 0. **8787 上是不是还挂着演示实例**：`netstat -ano | findstr :8787`。
    有就 `taskkill /F /PID <pid>`，否则你看到的全是假数据，真实服务也起不来
    （桌面壳遇到端口被占会自动换端口，所以它不会报错 —— 更难发现）
-1. **地基还在**：`npm test` —— 不需要装依赖，183 + 60 + 37 + 21 + 77 + 29 + 30 = **437 项**应全绿。
+1. **地基还在**：`npm test` —— 不需要装依赖，191 + 60 + 37 + 21 + 82 + 29 + 30 = **450 项**应全绿。
    解析 / 判定 / 落库 / 通勤 / 接口 / 剪贴板任意一环不通过，就不要碰界面
 2. **前端与桌面壳能构建**：`npm run build`（出 `web/dist`）、`npm run desktop:pack`（出免安装目录）
 3. **通勤能不能动**：`.env` 有 `AMAP_KEY`，且 `origins` 里**至少有一条出发点**（`GET /api/origins`）。

@@ -55,6 +55,13 @@ export interface CommuteBadge {
  * 后者是「这个地址高德定位不到」，等多久都不会有。混成一个灰色横杠，用户会一直等。
  */
 export function commuteBadge(o: Order): CommuteBadge {
+  /**
+   * 线上单先判：它既没有地址、也不该有通勤结论。
+   * 放在「无地址」之前，是为了不把它显示成「无地址」—— 那是缺数据，而线上单是**本来就不需要**。
+   */
+  if (o.mode === '线上') {
+    return { text: '不用通勤', tone: 'muted', title: '线上授课：不需要地址，也不会占用高德配额' };
+  }
   if (o.commuteStatus === 'ok' && o.commuteMinutes !== null) {
     const bits = [minutesText(o.commuteMinutes)];
     if (o.commuteTransfers !== null && o.commuteTransfers > 0) bits.push(`换 ${o.commuteTransfers} 次`);

@@ -438,6 +438,30 @@ try {
     // 冷却中的失败单不算候选，否则每刷新一次就把它捞回来空转一圈
     check('冷却期内的失败单不再入队', service.enqueuePending(30), { candidates: 0, queued: 0 });
   }
+
+  console.log('\n[13] 线上单：不算通勤、不占配额、不计入「还没算」');
+  {
+    const pendingBefore = db.countCommutePending();
+    db.importMessage({
+      text: `家教编号: 2026110617
+学员地址: 线上
+辅导科目: 英语
+时间安排: 每周1次
+教员要求: 男女不限
+老师薪水: 160元/h`,
+      sentAt: '2026-11-05T16:00:00',
+    });
+    const row = db.listOrders({ q: '2026110617' })[0]!;
+    check('地址被剥成授课形式', [row.address, row.mode], [null, '线上']);
+
+    const geoBefore = provider.geoCalls.length;
+    const transitBefore = provider.transitCalls;
+    check('线上单不进队列', service.enqueuePending(30), { candidates: 0, queued: 0 });
+    await service.queue.drain();
+    check('一次高德都不问', [provider.geoCalls.length, provider.transitCalls], [geoBefore, transitBefore]);
+    check('通勤保持 null（既没算，也没算失败）', row.commuteStatus, null);
+    check('不把「还有 N 单没算出通勤」一直挂着', db.countCommutePending(), pendingBefore);
+  }
 } finally {
   try {
     rmSync(dir, { recursive: true, force: true });
