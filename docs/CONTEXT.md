@@ -318,7 +318,7 @@ ZXGZ20261104.1
 - 六套回归**仍然不需要任何依赖** —— Node 24 原生剥离类型：
 
   ```
-  npm test   # parse(183) + match(60) + db(37) + db.migrate(21) + commute(72) + api(29) + clipboard(30) = 432 项
+  npm test   # parse(183) + match(60) + db(37) + db.migrate(21) + commute(77) + api(29) + clipboard(30) = 437 项
   ```
 
 - 桌面壳（阶段 8）的四个入口：
@@ -364,7 +364,7 @@ ZXGZ20261104.1
   `desktop/e2e/{shots,electron-smoke}.mjs`；`web/App.tsx` 空库首屏改成两步引导并隐藏重复的通勤提示条；
   `server/index.ts` 允许 `JIAJIAO_WEB_DIST` 覆盖静态目录；
   产出 `jiajiao-setup-0.1.0.exe` / `jiajiao-portable-0.1.0.exe`（未签名）；
-  回归从 368 项涨到 432 项（剪贴板 30 项是更早一轮加的，这次一并跑通）
+  回归从 368 项涨到 437 项（剪贴板 30 项是更早一轮加的；阶段 8 之后补了 5 条「队列断粮」的回归）
 
 - **2026-11-06 阶段 7 那次会话改了什么**（纯前端 + 一处接口 bug）：
   新增设置抽屉四件套（`SettingsDrawer` + `settings/{ProfileForm,OriginList,CommutePanel,bits}`）、
@@ -445,9 +445,19 @@ ZXGZ20261104.1
      而这里的 name 是 workspace 名。结果是数据和 `.env` 落在 `%APPDATA%\desktop`，
      名字太泛、还容易撞。现在 `app.setName('jiajiao')` 固定在 `%APPDATA%\jiajiao`。
     21. **Electron / nsis 的二进制在国内从 GitHub 拉不动**（实测 `github.com` 直接超时，
-     `npmmirror.com` 的 302/206 正常）。必须设 `ELECTRON_MIRROR` 与
-     `ELECTRON_BUILDER_BINARIES_MIRROR` 再装；另外下载命令**别接 `| more`**，
-     分页器在非交互终端里看起来就像卡死。
+        `npmmirror.com` 的 302/206 正常）。必须设 `ELECTRON_MIRROR` 与
+        `ELECTRON_BUILDER_BINARIES_MIRROR` 再装；另外下载命令**别接 `| more`**，
+        分页器在非交互终端里看起来就像卡死。
+
+    阶段 8 之后（2026-11-07）修掉：
+
+    22. **「队列断粮」：入队源不能用当前页**。原来 `api.ts` 拿 `listOrders({sort:'commute'})` 的结果去
+        `enqueueMissing()` —— 而那条查询按红线**只返回已算完的单子**。于是：第一单算完之后，
+        入队永远拿到 0 个候选、前端也不再轮询，剩下的单子再没人捞，界面却一直显示
+        「还有 N 单没算出通勤」，队列显示「空闲」。真实库里表现是 71 算好 / 81 没算，只有切换排序
+        （走 hourly，返回全量）才会再算 30 单。修法：新增 `db.listCommuteCandidates()` 专查待算集合
+        （条件与 `needsWork` 对齐，失败冷却下沉到 SQL），`api.ts` 改调 `commute.enqueuePending()`。
+        `commute.test.ts` 第 12 节守着：通勤排序里看不到的待算单，也必须被入队并算完。
 
 ---
 
@@ -459,7 +469,7 @@ ZXGZ20261104.1
 | 2 | **parser-regression** | 六套模板样本文件 + 逐条断言，全绿 | ✅ 159 项全绿 |
 | 3 | **requirements-match** | 要求结构化 + 我的资质 + 三态判定 | ✅ 56 项全绿（资质已落盘） |
 | 4 | **db-migrate** | 扩表迁移、`sent_at`、分档薪水、增量补全、导入诊断 | ✅ 52 项全绿（31 + 21） |
-| 5 | **commute-service** | 高德公交多方案、缓存、按需队列、配额保护 | ✅ 72 项全绿（假 provider） |
+| 5 | **commute-service** | 高德公交多方案、缓存、按需队列、配额保护 | ✅ 77 项全绿（假 provider，含队列断粮回归） |
 | 6 | **ui-rework** | 卡片与筛选栏改造 | ✅ 已构建并在本机跑通 |
 | 7 | **ui-settings-import** | 设置抽屉 + 导入体检面板 | ✅ 界面已跑通并截图验证（+ api 回归 29 项） |
 | 8 | **desktop-verify** | Electron 壳 + 打包 + playwright 端到端截图 | ✅ 安装包已构建，源码版/打包版冒烟通过 |
@@ -564,7 +574,8 @@ CommuteProvider ── AmapProvider
 - 缓存键：`起点经纬度4位|终点经纬度4位|mode|出发时刻桶`，**不含用户**，可跨用户复用
 - 坐标取 4 位小数（约 10 米），避免同小区异写重复扣配额
 - **出发时刻固定「下一个工作日 08:00」并进缓存键**，否则每天算出的数不可比
-- 按需计算：只对 `GET /api/orders` 实际返回的、缺数据的**前 30 条**入队
+- 按需计算：**每次 `GET /api/orders` 从全库待算集合里取前 30 条入队**（`db.listCommuteCandidates`）。
+  入队源**不得**用当前页 —— 按通勤排序时那一页只有已算完的单子，用它会永远入队 0 条（第 6 节第 22 条）
 - 串行队列 400ms 间隔 + 日配额计数 + 失败重试 1 次 + 达上限提示
 - 无 key 时通勤列显示「未配置」，其余功能正常
 
@@ -730,7 +741,7 @@ Electron 自带的 Node 版本，也不该把 `express`/`cors` 所在的整棵�
 0. **8787 上是不是还挂着演示实例**：`netstat -ano | findstr :8787`。
    有就 `taskkill /F /PID <pid>`，否则你看到的全是假数据，真实服务也起不来
    （桌面壳遇到端口被占会自动换端口，所以它不会报错 —— 更难发现）
-1. **地基还在**：`npm test` —— 不需要装依赖，183 + 60 + 37 + 21 + 72 + 29 + 30 = **432 项**应全绿。
+1. **地基还在**：`npm test` —— 不需要装依赖，183 + 60 + 37 + 21 + 77 + 29 + 30 = **437 项**应全绿。
    解析 / 判定 / 落库 / 通勤 / 接口 / 剪贴板任意一环不通过，就不要碰界面
 2. **前端与桌面壳能构建**：`npm run build`（出 `web/dist`）、`npm run desktop:pack`（出免安装目录）
 3. **通勤能不能动**：`.env` 有 `AMAP_KEY`，且 `origins` 里**至少有一条出发点**（`GET /api/origins`）。

@@ -394,6 +394,50 @@ try {
     check('重新算完，记的是新出发点', row.commuteOriginId, second.id);
     check('仍按最快的来', row.commuteMinutes, 35);
   }
+
+  /* ---------------------------------------------------------------- *
+   * 六、回归：入队源不能用「已过滤的当前页」
+   * ---------------------------------------------------------------- */
+  console.log('\n[12] 按通勤排序时，待算单也必须被捞进来（曾经的队列断粮）');
+  {
+    const fresh = [
+      { no: '2026110610', addr: '海珠昌岗' },
+      { no: '2026110611', addr: '广州番禺桥南' },
+      { no: '2026110612', addr: '广州竹料地铁站' },
+    ];
+    for (const f of fresh) {
+      db.importMessage({
+        text: `家教编号: ${f.no}
+学员地址: ${f.addr}
+辅导科目: 英语
+时间安排: 每周1次
+教员要求: 男女不限
+老师薪水: 120元/h`,
+        sentAt: '2026-11-05T15:00:00',
+      });
+    }
+    const ids = fresh.map((f) => db.listOrders({ q: f.no })[0]!.id);
+
+    // 前提：红线仍然成立 —— 通勤排序里看不到它们。这正是「拿当前页去入队」会拿到 0 个候选的原因
+    const sortedBefore = db.listOrders({ sort: 'commute' });
+    check('未算完的单子仍不在通勤排序里（红线没被放松）', sortedBefore.some((o) => ids.includes(o.id)), false);
+
+    // 修复点：从「待算集合」入队，与当前页无关
+    const res = service.enqueuePending(30);
+    check('待算集合里能捞到它们（至少 3 条）', res.candidates >= 3, true);
+    await service.queue.drain();
+
+    const after = fresh.map((f) => db.listOrders({ q: f.no })[0]!);
+    check(
+      '三单都算完了',
+      after.map((o) => o.commuteStatus),
+      ['ok', 'ok', 'ok'],
+    );
+    check('算完后它们才出现在通勤排序里', db.listOrders({ sort: 'commute' }).some((o) => ids.includes(o.id)), true);
+
+    // 冷却中的失败单不算候选，否则每刷新一次就把它捞回来空转一圈
+    check('冷却期内的失败单不再入队', service.enqueuePending(30), { candidates: 0, queued: 0 });
+  }
 } finally {
   try {
     rmSync(dir, { recursive: true, force: true });

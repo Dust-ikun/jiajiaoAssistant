@@ -716,6 +716,51 @@ export function countCommuteReady(): number {
   ).n;
 }
 
+/**
+ * 「还要算通勤」的候选单。
+ *
+ * 【为什么不复用 listOrders({ sort: 'commute' })】那是**红线过滤后的结果**：
+ * 按通勤排序时它只返回已算完的单子。曾经拿它去喂入队，于是「算完第一单之后，
+ * 入队永远拿到 0 个候选」—— 剩下的单子再也没人捞，界面却一直说「还有 56 单没算出通勤」。
+ * 入队必须从「待算集合」取，不能从「已经算好的那一页」取。
+ *
+ * 条件与 service 里的 needsWork 一一对应，但**失败的冷却直接下沉到 SQL**：
+ * 否则一屏 30 条候选全是刚失败、还在 6 小时冷却中的单子，就会挤掉真正还没算的单。
+ */
+export interface CommuteCandidate {
+  id: number;
+  address: string | null;
+  commuteStatus: string | null;
+  commuteCheckedAt: string | null;
+  commuteAddress: string | null;
+  commuteOriginId: number | null;
+}
+
+export function listCommuteCandidates(input: { originId: number; failedBefore: string; limit?: number }): CommuteCandidate[] {
+  const limit = input.limit ?? 30;
+  return db
+    .prepare(
+      `SELECT id,
+              address,
+              commute_status    AS commuteStatus,
+              commute_checked_at AS commuteCheckedAt,
+              commute_address   AS commuteAddress,
+              commute_origin_id AS commuteOriginId
+         FROM orders
+        WHERE address IS NOT NULL AND address <> ''
+          AND (
+            commute_status IS NULL
+            OR commute_status <> 'ok'
+            OR commute_address IS NOT address
+            OR commute_origin_id IS NOT ?
+          )
+          AND NOT (commute_status = 'failed' AND commute_checked_at IS NOT NULL AND commute_checked_at >= ?)
+        ORDER BY id ASC
+        LIMIT ?`,
+    )
+    .all(input.originId, input.failedBefore, limit) as unknown as CommuteCandidate[];
+}
+
 /** 有地址、但还没算出通勤的单子数：后端据此告诉界面「还有 N 单在算」 */
 export function countCommutePending(): number {
   return (

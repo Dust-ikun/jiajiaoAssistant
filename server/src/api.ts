@@ -94,8 +94,15 @@ export function createApp(commute: CommuteService = createCommuteService({ provi
     const verdict = typeof req.query.verdict === 'string' && req.query.verdict ? req.query.verdict : undefined;
     if (verdict) items = items.filter((o) => o.match.verdict === verdict);
 
-    // 按需计算：只对本屏真正返回的、缺通勤数据的前 30 条入队（决策 8.4），算完由前端下次轮询拿到
-    const { candidates, queued } = commute.enqueueMissing(items);
+    /**
+     * 按需计算：每次请求把 **全库待算集合** 里的前 30 条入队（决策 8.4）。
+     *
+     * 【为什么不能用 items 去入队】按通勤排序时 items 只含「已算完」的单子（红线），
+     * 于是算完第一单之后这里永远拿到 0 个候选，剩下的单子再没人捞 ——
+     * 界面一直显示「还有 N 单没算出通勤」，队列却是空闲的。
+     * 入队源必须与当前页的排序/筛选解耦。
+     */
+    const { candidates, queued } = commute.enqueuePending();
 
     res.json({
       total: items.length,

@@ -9,17 +9,23 @@
  *   5. 命中通勤缓存就直接落库；没命中才真的调高德
  *   6. 取最快一套写进 orders 的标量列供排序，**全部方案**留在缓存里供详情展开
  *
- * 【为什么算哪几条要由「本屏实际返回的单子」决定】决策 8.4：按需计算。
- * 库里有 500 单，其中大部分是外区的、过期不接的，全算一遍等于白烧配额。
- * 只算用户这一屏真正会看到的、还缺数据的前 30 条，剩下的滚动到再说。
+ * 【为什么一次只算 30 条】决策 8.4：按需计算。库里有几百单，全算一遍等于白烧配额；
+ * 一次 30 条 × 400ms ≈ 12 秒，和「用户看着这一屏」的节奏对得上，剩下的下一轮继续。
+ *
+ * 【但「哪 30 条」不能取当前页】曾经拿 `listOrders({sort:'commute'})` 的结果去入队 ——
+ * 那个查询按红线只返回**已算完**的单子，于是算完第一单之后入队永远拿到 0 个候选，
+ * 剩下的单子再也没人捞（界面却一直显示「还有 N 单没算出通勤」）。
+ * 现在改成从 `listCommuteCandidates()` 这个「待算集合」里取，与当前页的排序/筛选完全无关。
  */
 import {
   countCommutePending,
   countCommuteReady,
   getDefaultOrigin,
   getOrder,
+  listCommuteCandidates,
   updateOrderCommute,
   updateOrigin,
+  type CommuteCandidate,
   type OrderRow,
   type Origin,
 } from '../db.ts';
@@ -110,7 +116,12 @@ export interface CommuteService {
   readonly queue: CommuteQueue;
   status(): CommuteStatus;
   /** 对「本屏返回的单子里缺通勤数据的前 n 条」入队；返回候选数与实际入队数 */
-  enqueueMissing(orders: OrderRow[], limit?: number): { candidates: number; queued: number };
+  enqueueMissing(orders: CommuteCandidate[], limit?: number): { candidates: number; queued: number };
+  /**
+   * 从**全库待算集合**里取前 n 条入队（接口层该用这个）。
+   * 与当前页的排序、筛选无关 —— 按通勤排序时列表里根本没有待算单，用列表去入队等于永远不入队。
+   */
+  enqueuePending(limit?: number): { candidates: number; queued: number };
   optionsFor(orderId: number): OrderCommuteView | null;
 }
 
@@ -232,7 +243,7 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
   const FAILED_COOLDOWN_MS = 6 * 3600_000;
 
   /** 这条单子现在需要（重新）算吗？*/
-  function needsWork(order: OrderRow, originId: number): boolean {
+  function needsWork(order: CommuteCandidate, originId: number): boolean {
     if (!order.address) return false;
     if (order.commuteStatus === 'failed') {
       const checked = order.commuteCheckedAt ? new Date(order.commuteCheckedAt).getTime() : 0;
@@ -244,6 +255,17 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
     if (order.commuteAddress !== order.address) return true;
     if (order.commuteOriginId !== originId) return true;
     return false;
+  }
+
+  /** 入队的最后一步：过滤掉不该算的、截到一屏的量、交给队列 */
+  function enqueueOrders(orders: CommuteCandidate[], limit = MAX_ENQUEUE_PER_TICK) {
+    const origin = getDefaultOrigin();
+    if (!provider || !origin) return { candidates: 0, queued: 0 };
+    const ids = orders
+      .filter((o) => needsWork(o, origin.id))
+      .slice(0, limit)
+      .map((o) => o.id);
+    return { candidates: ids.length, queued: queue.enqueue(ids) };
   }
 
   return {
@@ -276,14 +298,18 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
       };
     },
 
-    enqueueMissing(orders: OrderRow[], limit = MAX_ENQUEUE_PER_TICK) {
+    enqueueMissing: enqueueOrders,
+
+    enqueuePending(limit = MAX_ENQUEUE_PER_TICK) {
       const origin = getDefaultOrigin();
       if (!provider || !origin) return { candidates: 0, queued: 0 };
-      const ids = orders
-        .filter((o) => needsWork(o, origin.id))
-        .slice(0, limit)
-        .map((o) => o.id);
-      return { candidates: ids.length, queued: queue.enqueue(ids) };
+      // 冷却期内的失败单由 SQL 排除，这里拿到的每一条都真的该算
+      const rows = listCommuteCandidates({
+        originId: origin.id,
+        failedBefore: new Date(now().getTime() - FAILED_COOLDOWN_MS).toISOString(),
+        limit,
+      });
+      return { candidates: rows.length, queued: enqueueOrders(rows, limit).queued };
     },
 
     optionsFor(orderId: number): OrderCommuteView | null {
