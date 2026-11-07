@@ -7,6 +7,7 @@ import {
   deleteOrigin,
   getMeta,
   importMessage,
+  listCommuteIssues,
   listOrders,
   listOrigins,
   updateOrder,
@@ -127,6 +128,19 @@ export function createApp(commute: CommuteService = createCommuteService({ provi
   });
 
   app.get('/api/commute/status', (_req, res) => res.json(commute.status()));
+
+  /**
+   * 通勤有问题的单子（算不出 + 还没轮到）。
+   * 这些单子在按通勤排序的列表里看不到，不给清单等于让用户对着一句「还有 N 单没算」发呆。
+   */
+  app.get('/api/commute/issues', (_req, res) => {
+    const items = listCommuteIssues();
+    res.json({
+      failed: items.filter((i) => i.status === 'failed').length,
+      pending: items.filter((i) => i.status === 'pending').length,
+      items,
+    });
+  });
 
   /** 剪贴板自动导入的状态与最近几次摘要（只有编号与计数，没有正文） */
   app.get('/api/capture/status', (_req, res) => res.json(clipboardWatcher.status()));

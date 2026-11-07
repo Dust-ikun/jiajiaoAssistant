@@ -116,6 +116,25 @@ export interface CommuteStatus {
   lastError: string | null;
 }
 
+/**
+ * 一条「通勤有问题」的单：算不出（failed）或还没轮到（pending）。
+ * 它们不出现在按通勤排序的列表里，只能从设置面板的清单里看。
+ */
+export interface CommuteIssue {
+  id: number;
+  orderNo: string | null;
+  address: string | null;
+  status: 'failed' | 'pending';
+  error: string | null;
+  checkedAt: string | null;
+}
+
+export interface CommuteIssues {
+  failed: number;
+  pending: number;
+  items: CommuteIssue[];
+}
+
 export interface OrdersResponse {
   total: number;
   items: Order[];

@@ -1,5 +1,6 @@
 import type {
   CaptureStatus,
+  CommuteIssues,
   CommuteStatus,
   Filters,
   ImportResult,
@@ -152,6 +153,13 @@ export async function fetchCommuteStatus(): Promise<CommuteStatus> {
   const res = await fetch('/api/commute/status');
   if (!res.ok) throw new Error('读取通勤状态失败');
   return (await res.json()) as CommuteStatus;
+}
+
+/** 算不出 / 还没轮到的单子清单（按通勤排序时它们在列表里看不到） */
+export async function fetchCommuteIssues(): Promise<CommuteIssues> {
+  const res = await fetch('/api/commute/issues');
+  if (!res.ok) throw new Error('读取通勤问题清单失败');
+  return (await res.json()) as CommuteIssues;
 }
 
 /** 剪贴板自动导入的状态（开着没、最近导了哪几单；正文不会出现在这里） */

@@ -461,6 +461,12 @@ try {
     check('一次高德都不问', [provider.geoCalls.length, provider.transitCalls], [geoBefore, transitBefore]);
     check('通勤保持 null（既没算，也没算失败）', row.commuteStatus, null);
     check('不把「还有 N 单没算出通勤」一直挂着', db.countCommutePending(), pendingBefore);
+
+    // 清单：这些单子在按通勤排序的列表里看不到，只能靠它
+    const issues = db.listCommuteIssues();
+    check('清单里没有线上单（它不需要通勤，别当问题单）', issues.some((i) => i.orderNo === '2026110617'), false);
+    check('算不出的单在清单里', issues.filter((i) => i.status === 'failed').map((i) => i.orderNo), ['2026110601']);
+    check('清单带原因，界面才能说清为什么', issues[0]?.error?.includes('定位不到'), true);
   }
 } finally {
   try {

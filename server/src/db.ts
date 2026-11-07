@@ -764,6 +764,49 @@ export function listCommuteCandidates(input: { originId: number; failedBefore: s
     .all(input.originId, input.failedBefore, limit) as unknown as CommuteCandidate[];
 }
 
+/** 一条「通勤有问题的单」：算不出（failed）或者还没轮到（pending） */
+export interface CommuteIssue {
+  id: number;
+  orderNo: string | null;
+  address: string | null;
+  status: 'failed' | 'pending';
+  error: string | null;
+  checkedAt: string | null;
+}
+
+/**
+ * 「通勤算不出的单子」清单。
+ *
+ * 【为什么必须有这份清单】这些单子在默认排序（按通勤）里**根本不出现** —— 红线规定
+ * 未算完的不许混进通勤排序。于是用户只能在 160 单里靠肉眼找红色徽标，等于看不见；
+ * 设置面板又只给「还有 N 单没算」这个数字，说不出是哪几单、为什么。
+ * 清单把「编号 + 地址 + 原因」摊开，用户才知道该去修哪条原文。
+ *
+ * 线上单不算：它们不需要通勤，出现在「有问题」的清单里只是噪音。
+ */
+export function listCommuteIssues(limit = 200): CommuteIssue[] {
+  const rows = db
+    .prepare(
+      `SELECT id, order_no, address, commute_status, commute_error, commute_checked_at
+         FROM orders
+        WHERE address IS NOT NULL AND address <> ''
+          AND COALESCE(mode, '') <> '线上'
+          AND (commute_status = 'failed' OR commute_status IS NULL)
+        ORDER BY (commute_status = 'failed') DESC, id ASC
+        LIMIT ?`,
+    )
+    .all(limit) as unknown as Record<string, unknown>[];
+
+  return rows.map((r) => ({
+    id: r.id as number,
+    orderNo: (r.order_no as string) ?? null,
+    address: (r.address as string) ?? null,
+    status: r.commute_status === 'failed' ? 'failed' : 'pending',
+    error: (r.commute_error as string) ?? null,
+    checkedAt: (r.commute_checked_at as string) ?? null,
+  }));
+}
+
 /**
  * 有地址、但还没算出通勤的单子数：后端据此告诉界面「还有 N 单在算」。
  * 线上单不算 —— 它永远不会被算，计进来只会让状态条一直挂着一句「还有 N 单没算」。

@@ -175,6 +175,14 @@ try {
     const status = await api('/api/commute/status');
     check('没有 key 时 blockedBy = no_key', status.body.blockedBy, 'no_key');
     check('配额度对象齐全', Object.keys(status.body.quota).sort(), ['exhausted', 'limit', 'remaining', 'used']);
+
+    // 算不出的单子在通勤排序里看不到，必须有一条能列出它们的接口，否则用户只能干瞪眼
+    const issues = await api('/api/commute/issues');
+    check('问题清单接口可用', issues.status, 200);
+    check('清单结构齐全', Object.keys(issues.body).sort(), ['failed', 'items', 'pending']);
+    check('导入的两单还没算 → 都在清单里', issues.body.items.length, 2);
+    check('没有 key 时它们都算「未算」而不是「算不出」', issues.body.failed, 0);
+    check('清单带编号与地址（界面据此定位是哪一单）', typeof issues.body.items[0].orderNo, 'string');
   }
 } finally {
   server.close();

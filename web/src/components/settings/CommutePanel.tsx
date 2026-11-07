@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
-import { fetchCommuteStatus } from '../../api';
-import type { CommuteStatus } from '../../types';
+import { fetchCommuteIssues, fetchCommuteStatus } from '../../api';
+import type { CommuteIssues, CommuteStatus } from '../../types';
+import { relTime } from '../../format';
 import { cn } from '../../cn';
 import { SectionTitle } from './bits';
 
@@ -18,6 +19,8 @@ interface Props {
  */
 export function CommutePanel({ onOpenOrigins }: Props) {
   const [s, setS] = useState<CommuteStatus | null>(null);
+  /** 算不出／还没轮到的单子。它们不出现在按通勤排序的列表里，只能在这里看 */
+  const [issues, setIssues] = useState<CommuteIssues | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -25,6 +28,10 @@ export function CommutePanel({ onOpenOrigins }: Props) {
     fetchCommuteStatus()
       .then(setS)
       .catch((e: unknown) => setError(e instanceof Error ? e.message : '读取失败'));
+    // 清单读失败不该把整个面板变成错误页：状态本身还是有用的
+    fetchCommuteIssues()
+      .then(setIssues)
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -143,6 +150,53 @@ export function CommutePanel({ onOpenOrigins }: Props) {
           />
         </div>
       </div>
+
+      {issues && issues.items.length > 0 && (
+        <div>
+          <SectionTitle>算不出 / 还没算的单子（{issues.items.length}）</SectionTitle>
+          <p className="mb-1.5 text-[10.5px] leading-relaxed text-slate-400">
+            按通勤排序时这些单子<b>不会</b>出现在列表里（红线：没算完的不参与通勤排序）。
+            多数是地址本身有问题 —— 改原文重新导入才会好，反复重试同一个地址结果一样。
+          </p>
+          <ul className="max-h-64 space-y-1 overflow-y-auto pr-1">
+            {issues.items.map((it) => (
+              <li
+                key={it.id}
+                className={cn(
+                  'rounded-lg border bg-white px-2.5 py-1.5',
+                  it.status === 'failed' ? 'border-rose-100' : 'border-slate-200',
+                )}
+              >
+                <div className="flex items-baseline gap-1.5">
+                  <span
+                    className={cn(
+                      'chip shrink-0',
+                      it.status === 'failed' ? 'bg-rose-50 text-rose-600' : 'bg-slate-100 text-slate-500',
+                    )}
+                  >
+                    {it.status === 'failed' ? '算不出' : '未算'}
+                  </span>
+                  <span className="truncate font-mono text-[11px] text-slate-500">#{it.orderNo ?? it.id}</span>
+                  {it.checkedAt && (
+                    <span className="ml-auto shrink-0 text-[10px] text-slate-400">{relTime(it.checkedAt)}</span>
+                  )}
+                </div>
+                <div
+                  className="mt-0.5 line-clamp-2 break-all text-[11px] leading-snug text-slate-600"
+                  title={it.address ?? ''}
+                >
+                  {it.address}
+                </div>
+                {it.status === 'failed' && it.error && (
+                  <div className="mt-0.5 truncate text-[10.5px] text-rose-600" title={it.error}>
+                    {it.error}
+                  </div>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {s.lastError && (
         <div>
