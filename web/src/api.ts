@@ -24,6 +24,7 @@ export function buildQuery(f: Filters): string {
   if (f.verdict) p.set('verdict', f.verdict);
   if (f.minHourly.trim()) p.set('minHourly', f.minHourly.trim());
   if (f.maxCommuteMinutes.trim()) p.set('maxCommuteMinutes', f.maxCommuteMinutes.trim());
+  if (f.commuteFailed) p.set('commute', 'failed');
   if (f.starredOnly) p.set('starred', '1');
   p.set('sort', f.sort);
   return p.toString();

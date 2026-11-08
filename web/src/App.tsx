@@ -18,6 +18,7 @@ const DEFAULT_FILTERS: Filters = {
   verdict: '',
   minHourly: '',
   maxCommuteMinutes: '',
+  commuteFailed: false,
   starredOnly: false,
   // 决策 8：默认通勤最短优先
   sort: 'commute',
@@ -244,6 +245,7 @@ export default function App() {
         <FilterSidebar
           meta={meta}
           filters={filters}
+          commuteFailedCount={page?.commuteFailed ?? 0}
           onChange={(p) => setFilters((f) => ({ ...f, ...p }))}
           onReset={() => setFilters(DEFAULT_FILTERS)}
         />
@@ -274,17 +276,27 @@ export default function App() {
 
             <span className="text-[11.5px] tabular-nums text-slate-400">{loading ? '加载中…' : `${orders.length} 条`}</span>
 
-            <select
-              value={filters.sort}
-              onChange={(e) => setFilters((f) => ({ ...f, sort: e.target.value as Filters['sort'] }))}
-              className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-600 outline-none focus:border-indigo-400"
-            >
-              {(Object.keys(SORT_LABEL) as Filters['sort'][]).map((k) => (
-                <option key={k} value={k}>
-                  {SORT_LABEL[k]}
-                </option>
-              ))}
-            </select>
+            {/*
+              「通勤算不出」这一栏没有一单有通勤数据，排序器给不了任何信息，
+              与其显示一个假的「按通勤最短」，不如直接说明它是按入库时间倒序。
+            */}
+            {filters.commuteFailed ? (
+              <span className="text-[11.5px] text-slate-400" title="这些单子没有通勤数据可排，按入库时间倒序">
+                按导入时间排
+              </span>
+            ) : (
+              <select
+                value={filters.sort}
+                onChange={(e) => setFilters((f) => ({ ...f, sort: e.target.value as Filters['sort'] }))}
+                className="rounded-md border border-slate-200 bg-white px-2 py-1 text-[12px] text-slate-600 outline-none focus:border-indigo-400"
+              >
+                {(Object.keys(SORT_LABEL) as Filters['sort'][]).map((k) => (
+                  <option key={k} value={k}>
+                    {SORT_LABEL[k]}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <ProfileNotice page={page} onOpenSettings={openSettings} />
@@ -305,9 +317,11 @@ export default function App() {
                 </p>
                 <p className="mx-auto mt-1 max-w-xs text-[12px] leading-relaxed text-slate-400">
                   {meta?.total
-                    ? filters.sort === 'commute' || filters.maxCommuteMinutes
-                      ? '通勤还没算完的单子不会参与通勤排序/筛选 —— 等后台算完再看，或者先切回「按时薪排序」。'
-                      : '试着放宽时薪下限，或清空左侧的区域/科目筛选。'
+                    ? filters.commuteFailed
+                      ? '当前没有「通勤算不出」的单子 —— 切回「全部」继续看。'
+                      : filters.sort === 'commute' || filters.maxCommuteMinutes
+                        ? '通勤还没算完的单子不会参与通勤排序/筛选 —— 等后台算完再看，或者先切回「按时薪排序」。'
+                        : '试着放宽时薪下限，或清空左侧的区域/科目筛选。'
                     : '两步就能用起来：先粘一批单子，再告诉程序你从哪出发。'}
                 </p>
                 {!meta?.total && (

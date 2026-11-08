@@ -13,9 +13,13 @@ data/profile.json
 .DS_Store
 .env
 
-# 桌面壳打包产物与端到端截图（本机验证用，不进版本控制）
+# 桌面壳打包产物与端到端脚本/截图（本机验证用，不进版本控制）
 desktop/release/
-desktop/e2e/shots/
+desktop/e2e/
+
+# 开发过程文件：工程指导、开发日志、方案草稿。只在本机，不进公开仓库
+CODEBUDDY.md
+docs/
 
 # 迁移前备份的库
 data/*.bak-*

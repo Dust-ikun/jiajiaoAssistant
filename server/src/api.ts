@@ -2,6 +2,7 @@ import express, { type Request } from 'express';
 import cors from 'cors';
 import {
   addOrigin,
+  countCommuteFailed,
   countCommuteReady,
   deleteOrder,
   deleteOrigin,
@@ -72,8 +73,14 @@ export function createApp(commute: CommuteService = createCommuteService({ provi
      * 并在响应里明确标 `sortFallback`，界面据此显示「通勤计算中，暂按时薪排」。
      * 这不违反红线：没算完的单子没有出现在任何「通勤排序」的结果里。
      */
+    /**
+     * 「通勤算不出」独立一栏：?commute=failed。
+     * 这一栏里没有一单是算完的，所以不参与「通勤排序降级」那套判断 ——
+     * 否则一单都没算完时会被降级成按时薪排，而这一栏本来就只有算不出的单。
+     */
+    const commuteFailed = req.query.commute === 'failed';
     const sortUsed: OrderQuery['sort'] =
-      requested === 'commute' && countCommuteReady() === 0 ? 'hourly' : requested;
+      requested === 'commute' && !commuteFailed && countCommuteReady() === 0 ? 'hourly' : requested;
 
     const q: OrderQuery = {
       q: typeof req.query.q === 'string' && req.query.q ? req.query.q : undefined,
@@ -87,6 +94,7 @@ export function createApp(commute: CommuteService = createCommuteService({ provi
       starred: req.query.starred === '1',
       sort: sortUsed,
       maxCommuteMinutes: num(req, 'maxCommuteMinutes'),
+      commuteFailed,
       limit: num(req, 'limit') ?? 500,
     };
     const { profile, error } = currentProfile();
@@ -112,6 +120,8 @@ export function createApp(commute: CommuteService = createCommuteService({ provi
       sort: sortUsed,
       sortFallback: sortUsed !== requested,
       commute: commute.status(),
+      // 筛选栏「通勤算不出」按钮上的数字
+      commuteFailed: countCommuteFailed(),
       commuteEnqueued: queued,
       commuteCandidates: candidates,
     });

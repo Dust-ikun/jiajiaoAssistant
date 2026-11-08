@@ -139,7 +139,7 @@ try {
         '【要求】有经验女大学生 DSE课程 一对二',
         '',
         '#1045',
-        '【地址】广州市番禺区钟村街道诜敦村生态园',
+        '【地址】广州市番禺区钟村街道XX村',
         '【年级】初一',
         '【科目】猎德英语',
         '【薪资】110-140/h',
@@ -183,6 +183,38 @@ try {
     check('导入的两单还没算 → 都在清单里', issues.body.items.length, 2);
     check('没有 key 时它们都算「未算」而不是「算不出」', issues.body.failed, 0);
     check('清单带编号与地址（界面据此定位是哪一单）', typeof issues.body.items[0].orderNo, 'string');
+
+    /* ---------------------------------------------------------------- *
+     * 五、「通勤算不出」分类视图
+     *
+     * 【为什么必须打到 HTTP 上】红线条件（sort=commute → commute_status='ok'）会把这一栏清空。
+     * db 层单独测不出来 —— 只有真的带 ?commute=failed 且 sort 仍是 commute 请求一次，
+     * 才知道「独立一栏」和「红线」没有互相打架。
+     * ---------------------------------------------------------------- */
+    console.log('\n[5] 通勤算不出：能单独列出来、能看详情');
+    const { getDb } = await import('./db.ts');
+    const all = await api('/api/orders');
+    const target = all.body.items[0];
+    getDb()
+      .prepare("UPDATE orders SET commute_status = 'failed', commute_error = '高德定位不到「测试地址」' WHERE id = ?")
+      .run(target.id);
+
+    const failedView = await api('/api/orders?commute=failed&sort=commute');
+    check('分类视图能列出算不出的单', failedView.body.items.map((o: any) => o.id), [target.id]);
+    check('不被通勤排序的红线清空', failedView.body.total, 1);
+    check('按钮上的数字跟着变', failedView.body.commuteFailed, 1);
+    check('这一栏不走「通勤排序降级」', [failedView.body.sort, failedView.body.sortFallback], ['commute', false]);
+
+    const detail = await api(`/api/orders/${target.id}/commute`);
+    check(
+      '算不出的单照样能取详情（只是没有方案）',
+      [detail.status, detail.body.status, detail.body.options.length],
+      [200, 'failed', 0],
+    );
+    check('详情里带着算不出的原因', String(detail.body.error).includes('定位不到'), true);
+
+    // 恢复现场，避免影响后面的断言（如果有）
+    getDb().prepare("UPDATE orders SET commute_status = NULL, commute_error = NULL WHERE id = ?").run(target.id);
   }
 } finally {
   server.close();

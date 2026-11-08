@@ -608,6 +608,27 @@ function parseSalarySegment(seg: string): SalaryTier | null {
     return { label: null, min, max: Math.max(min, max), unit: 'session' };
   }
 
+  /**
+   * 0.5) 总价 / 单次时长：`120/2小时`、`200-240/2h`、`120-135/1.5h`
+   *
+   * 【为什么必须排到 1)、2) 前面】这两种写法喂给下面的规则会得到两种都错的答案：
+   * - `120/2小时` 里离单位词「小时」最近的是 2，规则 2) 把它当价格 → **2 元/小时**。
+   *   这不是「算不出来」，是算出一个看着很正常的数，于是被排到列表最末，谁也看不出是错的；
+   * - `200-240/2h` 里的 h 不在规则 2) 的中文单位表里 → 单位留空 → 时薪 null。
+   * 症状不同，病因只有一个：斜杠后面那段是**时长**，不是价钱。
+   */
+  const perSlot = s.match(/\/\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|h|H)/);
+  if (perSlot && perSlot.index !== undefined) {
+    // 剥掉不属于价格的东西：「120元/2小时」的「元」、「160-200一次课/2小时」的「一次课」
+    const head = s
+      .slice(0, perSlot.index)
+      .replace(/\s*[元块]\s*$/, '')
+      .replace(/\s*(?:一次课|一节课|每节课|每次课|一次|每节|每次|一对一)\s*$/, '');
+    const priced = tailPrice(head);
+    if (!priced) return null;
+    return { label: priced.label || null, min: priced.min, max: priced.max, unit: 'session' };
+  }
+
   // 1) 斜杠单位：100-120/h、3000元/月、92/研究生110-120/小时
   const slash = s.match(/(?:元|块)?\s*\/\s*(小时|h|H|时|次|节|月|天)/);
   if (slash && slash.index !== undefined) {
@@ -641,10 +662,19 @@ export interface SalaryResult {
   tiers: SalaryTier[];
 }
 
-/** 按次报价括号里的单次时长：`一节课150（1.5小时)` → 1.5 */
+/**
+ * 报价里自带的单次时长（原文写了，不是猜的）：
+ * - 按次报价的括号：`一节课150（1.5小时)` → 1.5
+ * - 总价/时长写法：`120/2小时`、`200-240/2h` → 2
+ *
+ * 【为什么斜杠写法也要认】这类单子的「时间」字段常写「具体时间协商」，
+ * parseHours 拿不到时长；若不从这里补，unit=session 却缺时长，时薪只能留空。
+ */
 function hoursInSalary(raw: string): number | null {
-  const m = raw.match(/[（(]\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|h|H)\s*[)）]/);
-  return m ? Number(m[1]) : null;
+  const paren = raw.match(/[（(]\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|h|H)\s*[)）]/);
+  if (paren) return Number(paren[1]);
+  const perSlot = raw.match(/\/\s*(\d+(?:\.\d+)?)\s*(?:个)?\s*(?:小时|h|H)/);
+  return perSlot ? Number(perSlot[1]) : null;
 }
 
 /**
@@ -661,7 +691,16 @@ export function parseSalary(raw: string): SalaryResult {
   const text = raw.trim().replace(/[-~–—－]{2,}/g, '-');
   if (!text) return { min: null, max: null, unit: null, tiers: [] };
 
-  const segments = text.split(/[，,；;]/).map((s) => s.trim()).filter(Boolean);
+  const segments = text
+    .split(/[，,；;]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    /**
+     * 纯频次段不是薪水：`200-240/2h，一周2次` 的第二段会被规则 2) 读成「2 元/次」，
+     * 再被当成最低档，时薪就凭空变成 1 元/小时。
+     * 判据：带「周」且不含任何价格度量（元/块/小时/h/节/月/天）→ 它只在说次数。
+     */
+    .filter((s) => !(/周/.test(s) && !/(?:元|块|小时|[hH](?![a-zA-Z])|节|月|天)/.test(s)));
   const tiers = segments.map(parseSalarySegment).filter((t): t is SalaryTier => t !== null);
 
   if (tiers.length) {

@@ -122,8 +122,8 @@ try {
     // 配额上限可以从 .env 调，但写错不许把闸门放开
     check('AMAP_DAILY_LIMIT 正常生效', parseDailyLimit('1500'), 1500);
     check('小数取整', parseDailyLimit('12.7'), 12);
-    check('不填用默认', [parseDailyLimit(undefined), DEFAULT_DAILY_LIMIT], [300, 300]);
-    check('写错（abc / 负数 / 空串）一律退回默认', [parseDailyLimit('abc'), parseDailyLimit('-5'), parseDailyLimit(' ')], [300, 300, 300]);
+    check('不填用默认', [parseDailyLimit(undefined), DEFAULT_DAILY_LIMIT], [2000, 2000]);
+    check('写错（abc / 负数 / 空串）一律退回默认', [parseDailyLimit('abc'), parseDailyLimit('-5'), parseDailyLimit(' ')], [2000, 2000, 2000]);
   }
 
   /* ---------------------------------------------------------------- *

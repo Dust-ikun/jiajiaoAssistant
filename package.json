@@ -1,6 +1,6 @@
 {
   "name": "jiajiao",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "家教单聚合筛选工具",
   "workspaces": [

@@ -162,8 +162,11 @@ export function OrderCard({ order, expanded, onToggle, onPatch }: Props) {
             {o.freqPerWeek ? <span>每周 {o.freqPerWeek} 次</span> : null}
             {o.hoursPerSession ? <span>每次 {o.hoursPerSession}h</span> : null}
             {o.orderNo && <span className="font-mono text-[11px] text-slate-400">#{o.orderNo}</span>}
-            {/* 时效只用发送时间；超过一天变色，因为这种单基本已经被接掉了 */}
-            <span className={cn('text-[11.5px]', stale ? 'text-rose-500' : 'text-slate-400')} title={o.sentAt ?? ''}>
+            {/* 时效：原文写了时间头就是发送时间，没写就是导入时间；超过一天变色，这种单基本已被接掉 */}
+            <span
+              className={cn('text-[11.5px]', stale ? 'text-rose-500' : 'text-slate-400')}
+              title={o.sentAt ? `时间：${o.sentAt.replace('T', ' ')}` : '时间未知'}
+            >
               {relTime(o.sentAt)}
             </span>
           </div>

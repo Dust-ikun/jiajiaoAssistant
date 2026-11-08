@@ -46,11 +46,12 @@ import {
 export const MAX_ENQUEUE_PER_TICK = 30;
 
 /**
- * 默认日配额上限，单位是**HTTP 调用次数**（≈ 150 单且完全无缓存）。
- * 高德个人开发者的日配额是数千级（以控制台为准），这里压到 300 不是被卡，是主动踩刹车：
- * 真实日用量不过几十到一两百次，300 足够日常；真灌历史单时可以临时调大（见 index.ts 的 AMAP_DAILY_LIMIT）。
+ * 默认日配额上限，单位是**HTTP 调用次数**（≈ 1000 单且完全无缓存）。
+ * 高德个人开发者的日配额是数千级（以控制台为准）。默认给 2000 是为了「一次灌完历史单」：
+ * 几百单 × 每单最多 2 次调用也够，同时仍是明确的闸门 —— 不会因为某个死循环把一整天额度打光。
+ * 需要临时调整走 `.env` 的 `AMAP_DAILY_LIMIT`（见 index.ts）。
  */
-export const DEFAULT_DAILY_LIMIT = 300;
+export const DEFAULT_DAILY_LIMIT = 2000;
 
 /**
  * 解析 `.env` 里的 `AMAP_DAILY_LIMIT`。

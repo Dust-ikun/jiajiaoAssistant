@@ -5,10 +5,13 @@ import type { Order, SalaryTier } from './types';
  *
  * 【为什么单独一个函数】时效是这个工具最看重的维度：好单几小时内被抢，
  * 隔天看到的单基本无效。所以列表上必须时刻显示「几小时前」，而不是埋在详情里。
- * 传 null 时说「发送时间未知」—— 这条固定：**绝不拿导入时间冒充发布时间的替代品**。
+ *
+ * 【时间从哪来】微信复制出来的文本多数不带时间头，所以后端在没解析到时间头时
+ * 落的是**导入时间**（2026-11-07 改）。两者都是真实值，不猜；这里只负责显示，
+ * 不该再自己编一个「刚刚」。
  */
 export function relTime(iso: string | null): string {
-  if (!iso) return '发送时间未知';
+  if (!iso) return '时间未知';
   const t = new Date(iso).getTime();
   if (!Number.isFinite(t)) return '发送时间未知';
   const diff = Date.now() - t;

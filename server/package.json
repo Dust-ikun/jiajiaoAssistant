@@ -1,11 +1,11 @@
 {
   "name": "server",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "node --env-file=../.env --watch src/index.ts",
-    "start": "node --env-file=../.env src/index.ts",
+    "dev": "node --env-file-if-exists=../.env --watch src/index.ts",
+    "start": "node --env-file-if-exists=../.env src/index.ts",
     "test": "node src/parser/parse.test.ts && node src/match/match.test.ts && node --no-warnings src/db.test.ts && node --no-warnings src/db.migrate.test.ts && node --no-warnings src/commute/commute.test.ts && node --no-warnings src/api.test.ts && node --no-warnings src/clipboard.test.ts"
   },
   "dependencies": {

@@ -140,6 +140,17 @@ migrateColumns(db, 'orders', ADDED_ORDERS_COLUMNS);
 db.exec('CREATE INDEX IF NOT EXISTS idx_orders_commute ON orders(commute_minutes)');
 
 /**
+ * 老库回填：2026-11-07 之前，sent_at 只认文本里的时间头，绝大多数是 NULL。
+ * 既然新语义是「没时间头就记导入时间」，老数据也该按同一规则补齐 ——
+ * 否则改完代码，界面上那一百多单还是「发送时间未知」，看起来像没修。
+ * 幂等：只碰 NULL，已经有真实发送时间的不动。
+ */
+db.exec(`
+  UPDATE orders SET sent_at = first_seen WHERE sent_at IS NULL;
+  UPDATE raw_messages SET sent_at = imported_at WHERE sent_at IS NULL;
+`);
+
+/**
  * 把连接交给同进程的其他持久化模块（通勤缓存 / 配额计数）。
  * 【为什么不是各自再 open 一次】SQLite 允许，但两个连接各自持 WAL 锁更容易撞 SQLITE_BUSY；
  * 单进程单连接最简单。
@@ -402,7 +413,15 @@ export function importMessage(input: ImportInput): ImportResult {
   }
 
   const ts = now();
-  const msgSentAt = input.sentAt ?? parsed[0]?.sentAt ?? null;
+  /**
+   * 【为什么空着的时候退到 ts（导入时间）】微信里复制出来的文本**绝大多数不带时间头**，
+   * 原来这里 `?? null` 的结果是：绝大多数单子的 sent_at 是空的 —— 卡片上永远显示
+   * 「发送时间未知」，时效这一列等于没有，`sort=newest` 也只能把它们全排到最后。
+   *
+   * 现在的语义：原文写了时间头就用它（那确实是真的发送时间，比导入时间准）；
+   * 没写才落到导入时间。两个来源都明确可知，不做任何猜测。
+   */
+  const msgSentAt = input.sentAt ?? parsed[0]?.sentAt ?? ts;
   const msgRow = db
     .prepare(
       `INSERT INTO raw_messages (group_name, sender, sent_at, raw_text, content_hash, source, imported_at)
@@ -429,7 +448,8 @@ export function importMessage(input: ImportInput): ImportResult {
       i,
       o.orderNo,
       o.statusTag,
-      o.sentAt ?? input.sentAt ?? null,
+      // 单条自己的时间头 > 调用方显式给的时间 > 导入时间（见上面 msgSentAt 的说明）
+      o.sentAt ?? input.sentAt ?? ts,
       o.district,
       o.area,
       o.address,
@@ -482,6 +502,14 @@ export interface OrderQuery {
   sort?: 'hourly' | 'newest' | 'salary' | 'commute';
   /** 只看通勤不超过 N 分钟的单子（未算完通勤的一律不进，见下面 WHERE） */
   maxCommuteMinutes?: number;
+  /**
+   * 只看「通勤算不出」的单子（commute_status = 'failed'）。
+   *
+   * 【为什么这一栏可以绕过红线】红线管的是「未算完的别混进通勤排序」，怕的是
+   * 「前 10 名」变成「先算完的 10 名」。这里是**独立的一栏**：用户明确要只看这些单子，
+   * 进去补地址、看详情，它不参与任何通勤排序，两者不冲突。
+   */
+  commuteFailed?: boolean;
   limit?: number;
 }
 
@@ -581,17 +609,27 @@ export function listOrders(q: OrderQuery) {
   // 【红线】未算完通勤的单子不得混进已排序列表。
   // 否则「通勤最近的 10 单」实际是「先算完的 10 单」——离得近的单子还没算，
   // 用户会以为附近没单，这种漏单是不可察觉的（见 CODEBUDDY.md 硬约束）。
-  if (q.sort === 'commute' || typeof q.maxCommuteMinutes === 'number') {
+  if (q.commuteFailed) {
+    // 独立一栏：只列算不出的。此时不再叠加下面那条「必须是 ok」，
+    // 否则两个条件互斥，用户点进去永远看到空列表。
+    where.push("commute_status = 'failed'");
+  } else if (q.sort === 'commute' || typeof q.maxCommuteMinutes === 'number') {
     where.push("commute_status = 'ok' AND commute_minutes IS NOT NULL");
   }
-  if (typeof q.maxCommuteMinutes === 'number') {
+  // 「算不出」那一栏里 commute_minutes 全是 NULL，再叠一个上限只会得到空列表
+  if (typeof q.maxCommuteMinutes === 'number' && !q.commuteFailed) {
     where.push('commute_minutes <= ?');
     params.push(q.maxCommuteMinutes);
   }
 
-  // 「最新」按消息发送时间排，不是按导入时间 —— 否则隔天补录的旧单会顶到最前面
-  const orderBy =
-    q.sort === 'newest'
+  /**
+   * 排序。「通勤算不出」这一栏里没有一个有 commute_minutes，按通勤排等于没排，
+   * 所以固定按入库时间倒序 —— 用户是按批次去补地址的，最新的先修。
+   * 其余情况「最新」按消息时间排，隔天补录的旧单不会顶到最前面。
+   */
+  const orderBy = q.commuteFailed
+    ? 'last_seen DESC'
+    : q.sort === 'newest'
       ? 'sent_at IS NULL, sent_at DESC, last_seen DESC'
       : q.sort === 'salary'
         ? 'salary_min IS NULL, salary_min DESC'
@@ -822,6 +860,17 @@ export function countCommutePending(): number {
       )
       .get() as { n: number }
   ).n;
+}
+
+/**
+ * 「算不出通勤」的单子数：筛选栏那个分类按钮上的数字。
+ *
+ * 【为什么口径必须和 listOrders 一字不差】按钮写 21、点进去 23 条，用户会以为筛选坏了。
+ * 所以这里不加任何额外条件（不排除线上单、不要求有地址）——
+ * 与 `?commute=failed` 的 WHERE 完全一致。没有地址的单也该被看见：正是要去补地址。
+ */
+export function countCommuteFailed(): number {
+  return (db.prepare(`SELECT COUNT(*) AS n FROM orders WHERE commute_status = 'failed'`).get() as { n: number }).n;
 }
 
 /* ------------------------------------------------------------------ *

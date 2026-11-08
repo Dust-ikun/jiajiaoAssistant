@@ -5,6 +5,8 @@ import { cn } from '../cn';
 interface Props {
   meta: Meta | null;
   filters: F;
+  /** 「通勤算不出」有多少单：0 就不用白点一趟 */
+  commuteFailedCount: number;
   onChange: (patch: Partial<F>) => void;
   onReset: () => void;
 }
@@ -48,7 +50,7 @@ function FacetGroup({
   );
 }
 
-export function FilterSidebar({ meta, filters, onChange, onReset }: Props) {
+export function FilterSidebar({ meta, filters, commuteFailedCount, onChange, onReset }: Props) {
   const toggle = (key: 'districts' | 'stages' | 'subjects' | 'modes', v: string) => {
     const cur = filters[key];
     onChange({ [key]: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v] } as Partial<F>);
@@ -62,6 +64,7 @@ export function FilterSidebar({ meta, filters, onChange, onReset }: Props) {
     (filters.verdict ? 1 : 0) +
     (filters.minHourly ? 1 : 0) +
     (filters.maxCommuteMinutes ? 1 : 0) +
+    (filters.commuteFailed ? 1 : 0) +
     (filters.starredOnly ? 1 : 0);
 
   return (
@@ -143,6 +146,48 @@ export function FilterSidebar({ meta, filters, onChange, onReset }: Props) {
           </div>
           <p className="mt-1.5 text-[10.5px] leading-snug text-slate-400">
             只留算法算完的单子；没算完的不参与比较，避免「先算完的」冒充「最近的」
+          </p>
+        </section>
+
+        {/*
+          通勤分类。
+          【为什么单开一栏而不是放宽排序】「算不出通勤」的单子在按通勤排序的列表里根本不出现
+          （红线：没算完的不许混进通勤排序）。但用户需要能进去看详情、补地址、改状态 ——
+          这就要求它是一个**独立视图**，而不是把红线放松。
+          点进来后这些单子跟普通单子长得一样，只是通勤那格写着「通勤算不出」+ 原因。
+        */}
+        <section>
+          <h3 className="mb-2 text-[11px] font-semibold tracking-wider text-slate-400">通勤分类</h3>
+          <div className="flex flex-wrap gap-1.5">
+            <button
+              onClick={() => onChange({ commuteFailed: false })}
+              className={cn(
+                'chip border transition-colors',
+                !filters.commuteFailed
+                  ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300',
+              )}
+            >
+              全部
+            </button>
+            <button
+              onClick={() => onChange({ commuteFailed: true, maxCommuteMinutes: '' })}
+              title="这些单子算不出通勤（多半是地址定位不到），单独列出来方便进去补地址"
+              className={cn(
+                'chip border transition-colors',
+                filters.commuteFailed
+                  ? 'border-rose-500 bg-rose-50 text-rose-700'
+                  : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300',
+              )}
+            >
+              通勤算不出
+              <span className={cn('tabular-nums', filters.commuteFailed ? 'text-rose-400' : 'text-slate-300')}>
+                {commuteFailedCount}
+              </span>
+            </button>
+          </div>
+          <p className="mt-1.5 text-[10.5px] leading-snug text-slate-400">
+            点进去的单子跟普通单一样能展开、改状态、复制原文，只是少了通勤方案
           </p>
         </section>
 

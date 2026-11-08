@@ -52,7 +52,7 @@ const ENV_TEMPLATE = `# 家教单助手 · 本机配置（只在本机，不上�
 AMAP_KEY=
 
 # 每天最多调用多少次高德接口（一单最多 2 次：地理编码 + 路径规划）
-AMAP_DAILY_LIMIT=300
+AMAP_DAILY_LIMIT=2000
 
 # 复制群消息就自动入库。默认关 —— 它会静默往库里写东西，需要你自己打开。
 # CLIPBOARD_AUTO_IMPORT=1

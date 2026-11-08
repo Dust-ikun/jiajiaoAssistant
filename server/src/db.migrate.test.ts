@@ -127,7 +127,8 @@ try {
     check('手改的 status 还在', row.status, 'contacted');
     check('手改的 starred 还在', row.starred, true);
     check('手改的 remark 还在', row.remark, '老备注');
-    check('旧单没有发送时间就是 null（不编造）', row.sentAt, null);
+    // 2026-11-07 决策：没解析到时间头就用入库时间补，不留空（否则界面永远显示「时间未知」）
+    check('旧单没有发送时间就用入库时间补上', row.sentAt, '2026-10-01T10:00:00Z');
     check('旧单没有分档薪水就是空数组', row.salaryTiers, []);
     check('出现次数没被重置', row.occurrences, 3);
     check('旧单没算过通勤就是 null（不是 failed，更不是 0）', [row.commuteStatus, row.commuteMinutes], [null, null]);

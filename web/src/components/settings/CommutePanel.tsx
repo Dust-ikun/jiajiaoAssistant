@@ -156,6 +156,7 @@ export function CommutePanel({ onOpenOrigins }: Props) {
           <SectionTitle>算不出 / 还没算的单子（{issues.items.length}）</SectionTitle>
           <p className="mb-1.5 text-[10.5px] leading-relaxed text-slate-400">
             按通勤排序时这些单子<b>不会</b>出现在列表里（红线：没算完的不参与通勤排序）。
+            要看详情就用左侧筛选栏的<b>「通勤算不出」</b>——那一栏里它们跟普通单子长得一样。
             多数是地址本身有问题 —— 改原文重新导入才会好，反复重试同一个地址结果一样。
           </p>
           <ul className="max-h-64 space-y-1 overflow-y-auto pr-1">

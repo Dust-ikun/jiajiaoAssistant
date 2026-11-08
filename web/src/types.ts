@@ -144,6 +144,8 @@ export interface OrdersResponse {
   /** true = 请求的通勤排序没料，降级成按时薪排（界面要说出来） */
   sortFallback: boolean;
   commute: CommuteStatus;
+  /** 「算不出通勤」的单子数：筛选栏那个分类按钮上的数字 */
+  commuteFailed: number;
   commuteEnqueued: number;
   commuteCandidates: number;
 }
@@ -283,6 +285,11 @@ export interface Filters {
   minHourly: string;
   /** 只看通勤不超过 N 分钟的单子（未算完的一律不进） */
   maxCommuteMinutes: string;
+  /**
+   * 只看「通勤算不出」的单子。独立一栏：这些单子进不了通勤排序（红线），
+   * 但用户需要能进去看详情、补地址，所以单独给一个入口。
+   */
+  commuteFailed: boolean;
   starredOnly: boolean;
   sort: SortKey;
 }
