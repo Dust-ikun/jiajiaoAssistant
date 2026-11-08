@@ -312,6 +312,9 @@ const NOISE_PATTERNS: RegExp[] = [
   new RegExp(`^(?:${CITY_WORDS})?家教(?:[#＃]|$)`),
   // 夹在单子里的小广告（`招小助理啦❣线上操作，时间自由…`），不是单子内容
   /招小助理|时间自由福利/,
+  // 授课形式标记独立成行，是机构单之间的分隔符、不是字段内容。
+  // 留着会被当成上一字段的续行 —— 实测一条地址里拼进了 8 个「上门一对一」。
+  /^上门一对一\s*$/,
 ];
 
 export function isNoiseLine(line: string): boolean {
@@ -418,6 +421,39 @@ function splitByBlank(lines: string[], fallback: string | null): RawBlock[] {
  * 五、字段抽取
  * ------------------------------------------------------------------ */
 
+/**
+ * 地址的长度安全阀。
+ *
+ * 【为什么需要】切块靠编号锚点，而机构单常常整段没有编号 —— 几十条单的内容会并进同一个块，
+ * 地址字段跟着吞掉后面几单的正文。真实库里出现过 **855 字、2122 字**的「地址」，
+ * 通勤侧拿它去查高德，先是 HTTP 413（URL 超长），改完之后又是 30001。
+ * 60 字以内一律不动（正常地址二三十字，折成两行写也就四五十）；
+ * 超过就只留第一个空格分段 —— 那才是这一单的地址。
+ */
+function tidyAddress(raw: string): string {
+  if (raw.length <= 60) return raw;
+  const first = raw.split(/\s+/)[0] ?? '';
+  return first.length >= 4 ? first : raw.slice(0, 60);
+}
+
+/**
+ * 看起来像字段行、但词典里没有 —— 绝不能当成上一字段的续行。
+ *
+ * 【踩过的坑】「学习情况:找一个老师…」、「【年级性别】初三男孩」、「【补习科目 数学英语…」
+ * 这三类（未知字段名 / 手打缺右括号）原本 fallthrough 到续行分支，被逐行拼进上一个字段。
+ * 真实库里就长出了 855、2122 字的「地址」——原文其实一行一个字段，是解析把它们缝起来的。
+ * 后果一路传到底：通勤拿这串去查高德，要么 413（URL 超长）要么 30001（引擎处理不了）。
+ *
+ * 判据比「字段名在不在词典」更宽：**以【/[ 开头**（说明是个包裹字段），
+ * 或**行首 2~8 个汉字/字母紧跟冒号**（说明是个 `xxx:` 字段）。
+ */
+function looksLikeFieldish(line: string): boolean {
+  const t = line.trim();
+  if (/^[【[]/.test(t)) return true;
+  if (/^[\u4e00-\u9fa5A-Za-z]{2,8}[:：]/.test(t)) return true;
+  return false;
+}
+
 function parseFields(lines: string[]): { fields: Partial<Record<FieldKey, string>>; extra: string[] } {
   const fields: Partial<Record<FieldKey, string>> = {};
   const extra: string[] = [];
@@ -426,16 +462,24 @@ function parseFields(lines: string[]): { fields: Partial<Record<FieldKey, string
   for (const line of lines) {
     const hit = readFieldLine(line);
     if (hit) {
+      const existed = fields[hit.key];
       cur = hit.key;
-      const v = hit.value;
-      fields[hit.key] = fields[hit.key] ? `${fields[hit.key]} ${v}`.trim() : v;
+      if (!existed) {
+        fields[hit.key] = hit.value;
+      } else if (hit.key !== 'address') {
+        // 同一个字段在一份单子里写了两遍：要求/时间这类确实会分几行补充，拼起来是对的
+        fields[hit.key] = `${existed} ${hit.value}`.trim();
+      }
+      // 地址是单值字段，第二遍出现只可能是混进了另一条单的「地址:」——
+      // 拼起来会得到「黄埔区怡港花园 越秀区恒福路」这种两个地址串，保留第一个即可
       continue;
     }
     // 【为什么这里要过噪声闸门】「上门家教073 2026年11月5日 14:58」这类行
     // 一旦被当成续行吞进薪资字段，界面上就会看到「150-180/h 上门家教073 …」，
     // 而且不会报错 —— 静默污染比解析失败危险得多。
     if (isNoiseLine(line)) continue;
-    if (cur) {
+    if (cur && !looksLikeFieldish(line)) {
+      // 真正的续行：地址被微信折了两行、要求后半句另起一行
       fields[cur] = `${fields[cur]} ${line}`.trim();
     } else if (line) {
       extra.push(line);
@@ -808,7 +852,7 @@ export function buildOrder(block: RawBlock): ParsedOrder | null {
 
   const orderNo = normalizeOrderNo(block.anchor?.orderNo ?? fields.orderNo ?? '') || null;
   // `【辅导地址】#海珠区…` / `【辅导地址】】#白云区…`：值前面常带 # 或多余的右括号，都不属于地址
-  const addressRaw = fields.address?.replace(/^[】\]#＃\s]+/, '').trim() || null;
+  const addressRaw = tidyAddress(fields.address?.replace(/^[】\]#＃\s]+/, '').trim() || '') || null;
 
   /**
    * 地址栏里只写了「线上」的情况（真实数据里不止一条）：那**不是地址**，是授课形式。

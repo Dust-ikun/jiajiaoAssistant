@@ -31,7 +31,9 @@ import {
 } from '../db.ts';
 import { createDailyQuota, nextWorkdayDepartAt, planCacheKey, readGeo, readPlan, readPlanByKey, writeGeo, writePlan, type DailyQuota } from './cache.ts';
 import { CommuteQueue } from './queue.ts';
+import { inferCity } from './city.ts';
 import {
+  COMMUTE_ENGINE_VERSION,
   CommuteError,
   GeocodeMissError,
   type CommuteMode,
@@ -75,6 +77,12 @@ export interface CommuteServiceOptions {
   intervalMs?: number;
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * 地址里看不出城市时的兜底城市。
+   * 【为什么和 provider 各记一份】缓存键要用「用哪个城市查的」，而缓存键必须在调 provider 之前算出来。
+   * 两边取同一个来源（`AMAP_CITY`，默认广州）才不会分叉，见 amap.ts 的 cityFromEnv。
+   */
+  defaultCity?: string;
 }
 
 /**
@@ -130,6 +138,7 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
   const provider = options.provider ?? null;
   const quota = options.quota ?? createDailyQuota(options.dailyLimit ?? DEFAULT_DAILY_LIMIT, 'amap', options.now);
   const now = options.now ?? (() => new Date());
+  const defaultCity = options.defaultCity ?? (process.env.AMAP_CITY?.trim() || '广州');
 
   const providerInfo = (): ProviderInfo =>
     provider
@@ -142,21 +151,25 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
    * 按单子缓存等于把一个地址重复解析几十次。
    */
   async function geocodeCached(address: string): Promise<GeocodeResult> {
-    const hit = readGeo(address, now());
+    // 城市要和 provider 内部用的那份推断一致，否则会出现「按佛山查、按广州存」这种分叉缓存
+    const city = inferCity(address, defaultCity).city;
+    const hit = readGeo(city, address, now());
     if (hit) {
       if (hit.ok && hit.result) return hit.result;
       // 上次就定位不到：直接抛，重试没有意义（TTL 6 小时后才会再试）
       throw new GeocodeMissError(hit.error ?? `高德定位不到「${address}」`);
     }
     if (!provider) throw new CommuteError('未配置高德 key');
+    // 这里只记 1 次：粗匹配兜底（poiTail）可能让 provider 多发一次请求。配额是防失控的闸门，
+    // 不是账单 —— 少数地址多算一次，比为了精确计数把额外那次调用藏进缓存层要好修得多
     quota.take();
     try {
       const result = await provider.geocode(address);
-      writeGeo(address, { result, error: null }, now());
+      writeGeo(city, address, { result, error: null }, now());
       return result;
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      writeGeo(address, { result: null, error: msg }, now());
+      writeGeo(city, address, { result: null, error: msg }, now());
       throw e;
     }
   }
@@ -179,6 +192,7 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
       originId: origin.id,
       address,
       cacheKey: key,
+      engine: COMMUTE_ENGINE_VERSION,
       error: null,
     });
   }
@@ -234,8 +248,9 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
     intervalMs: options.intervalMs ?? 400,
     canRun: () => quota.remaining() > 0,
     onFailure: (orderId, error) => {
-      // 失败要留痕、也要留时间戳：界面显示「算不出来 + 原因」，而不是永远转圈
-      updateOrderCommute(orderId, { status: 'failed', error: error.message });
+      // 失败要留痕、也要留时间戳：界面显示「算不出来 + 原因」，而不是永远转圈。
+      // 失败也是新口径试出来的，打上版本号，免得 6 小时冷却一过又因为「版本不符」被重复捞回来
+      updateOrderCommute(orderId, { status: 'failed', engine: COMMUTE_ENGINE_VERSION, error: error.message });
     },
     sleep: options.sleep,
   });
@@ -254,6 +269,9 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
       return true;
     }
     if (order.commuteStatus !== 'ok') return true;
+    // 计算口径变了（比如地理编码改为按城市推断）→ 旧结论一律作废。
+    // 只比对地址/出发点是不够的：地址没变、出发点没变，但代码把坐标算错了，值会一直挂着。
+    if (order.commuteEngine !== COMMUTE_ENGINE_VERSION) return true;
     // 地址被增量补全改了、或换了默认出发点 → 旧结论作废，重算（多数情况会命中缓存，几乎不耗配额）
     if (order.commuteAddress !== order.address) return true;
     if (order.commuteOriginId !== originId) return true;
@@ -289,8 +307,9 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
         blockedBy,
         queued: queue.size(),
         busy: queue.isBusy(),
-        ready: countCommuteReady(),
-        pending: countCommutePending(),
+        ready: countCommuteReady(COMMUTE_ENGINE_VERSION),
+        // 口径过期的单子也算「还没算」：它们会被 needsWork 捞去重算，界面得一起显示，否则数字对不上
+        pending: countCommutePending(COMMUTE_ENGINE_VERSION),
         quota: {
           limit: quota.limit,
           used: quota.used(),
@@ -309,6 +328,7 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
       // 冷却期内的失败单由 SQL 排除，这里拿到的每一条都真的该算
       const rows = listCommuteCandidates({
         originId: origin.id,
+        engine: COMMUTE_ENGINE_VERSION,
         failedBefore: new Date(now().getTime() - FAILED_COOLDOWN_MS).toISOString(),
         limit,
       });

@@ -10,7 +10,15 @@
  * 「星汇金沙」和「金沙洲星汇金沙」时，经纬度往往落在几十米内，取 4 位能命中同一条缓存，
  * 取 6 位则会重复扣配额。
  */
-import { CommuteError, QuotaExceededError, type CommuteOption, type GeoPoint, type GeocodeResult } from './types.ts';
+import {
+  COMMUTE_ENGINE_VERSION,
+  CommuteError,
+  QuotaExceededError,
+  type CommuteOption,
+  type GeoPoint,
+  type GeocodeResult,
+} from './types.ts';
+import { inferCity, isDowngradedMatch } from './city.ts';
 import { getDb } from '../db.ts';
 
 const db = getDb();
@@ -211,10 +219,28 @@ interface GeoRow {
   fetched_at: string;
 }
 
-export function readGeo(address: string, now: Date = new Date()): { ok: boolean; result: GeocodeResult | null; error: string | null } | null {
+/**
+ * 地理编码缓存键：**城市 + 归一化地址**。
+ *
+ * 【为什么城市必须在键里】同一条地址在不同城市限定下会解析到完全不同的点：
+ * 「桂城街道堑坊村」按广州查 → 广州市天河区桂城街道（离暨大 1 公里）；
+ * 不限定 → 肇庆市鼎湖区桂城街道。只按地址缓存，等于把「当初用哪个城市查的」
+ * 偷偷固化在旧值里 —— 改完城市推断后，旧错值还会命中，界面上那个 24 分钟永远刷不掉。
+ *
+ * 副作用是旧格式（纯地址）的行全部失效，这正好是想要的效果：它们都是按广州查出来的。
+ */
+export function geoKey(city: string, address: string): string {
+  return `${city}|${normalizeAddress(address)}`;
+}
+
+export function readGeo(
+  city: string,
+  address: string,
+  now: Date = new Date(),
+): { ok: boolean; result: GeocodeResult | null; error: string | null } | null {
   const row = db
     .prepare('SELECT ok, lng, lat, formatted, level, error, fetched_at FROM geo_cache WHERE address_key = ?')
-    .get(normalizeAddress(address)) as GeoRow | undefined;
+    .get(geoKey(city, address)) as GeoRow | undefined;
   if (!row) return null;
   const ttl = row.ok === 1 ? GEO_TTL_OK_DAYS * 24 : GEO_TTL_FAIL_HOURS;
   if (ageHours(row.fetched_at, now) > ttl) return null;
@@ -223,12 +249,14 @@ export function readGeo(address: string, now: Date = new Date()): { ok: boolean;
   }
   return {
     ok: true,
-    result: { location: { lng: row.lng, lat: row.lat }, formatted: row.formatted ?? '', level: row.level },
+    // 缓存表没存 city/adcode：老库不用加列，这两个字段只用于当次校验与排查
+    result: { location: { lng: row.lng, lat: row.lat }, formatted: row.formatted ?? '', level: row.level, city: null, adcode: null },
     error: null,
   };
 }
 
 export function writeGeo(
+  city: string,
   address: string,
   result: { result: GeocodeResult | null; error: string | null },
   now: Date = new Date(),
@@ -242,7 +270,7 @@ export function writeGeo(
        formatted = excluded.formatted, level = excluded.level,
        error = excluded.error, fetched_at = excluded.fetched_at`,
   ).run(
-    normalizeAddress(address),
+    geoKey(city, address),
     address,
     result.result ? 1 : 0,
     loc ? roundCoord(loc.lng) : null,
@@ -253,6 +281,81 @@ export function writeGeo(
     now.toISOString(),
   );
 }
+
+/**
+ * 一次性数据修正（2026-11-08）：建在「区县/乡镇/村庄」级坐标上的旧通勤结论全部作废。
+ *
+ * 【为什么连广州单也要查】第一次修复只清了佛山那批，假设「广州地址本来就用广州查的，结论可信」。
+ * 这个假设是错的：地理编码当时还盲取 `geocodes[0]`、也不校验降级，高德对
+ * 「广州市天河区黄埔大道易通大厦（暨大旁边）」只返回「广东省广州市黄埔区」—— 区县中心，
+ * 离暨大 15 公里，于是这单算出 71 分钟；真实位置就在旁边。真实库里 239 条已算单中有 31 条
+ * 都建在这种粗坐标上（「天河壹品」→ 整个天河区、「白云中海金沙湾」→ 整个白云区……）。
+ *
+ * 判据只看当时那条 geo_cache 的 level：
+ *   - 细（住宅区/门牌号/兴趣点/道路/公交地铁站点…）→ 坐标可信，打版本号继续用，不白烧配额
+ *   - 粗（区县/乡镇/村庄…）或查不到              → 作废，等新口径重算
+ *
+ * 幂等：只处理 `commute_engine` 为空的老数据；处理后要么带上版本号，要么被清成 NULL 再算一遍。
+ */
+export function migrateCommuteEngineOnce(): void {
+  const stale = db
+    .prepare('SELECT id, address FROM orders WHERE commute_status IS NOT NULL AND commute_engine IS NULL')
+    .all() as { id: number; address: string | null }[];
+  if (!stale.length) return;
+
+  const geoOf = db.prepare('SELECT level, formatted FROM geo_cache WHERE address_key = ?');
+  const reset = db.prepare(
+    `UPDATE orders SET
+       commute_status = NULL, commute_minutes = NULL, commute_distance = NULL, commute_transfers = NULL,
+       commute_fare = NULL, commute_cache_key = NULL, commute_checked_at = NULL, commute_error = NULL
+     WHERE id = ?`,
+  );
+  const mark = db.prepare('UPDATE orders SET commute_engine = ? WHERE id = ?');
+  const fallbackCity = process.env.AMAP_CITY?.trim() || '广州';
+
+  let dropped = 0;
+  db.exec('BEGIN');
+  try {
+    for (const row of stale) {
+      const address = row.address ?? '';
+      const geo = geoOf.get(normalizeAddress(address)) as { level: string | null; formatted: string | null } | undefined;
+      // 用**和现在完全同一套判定**去回看当初那条坐标：区县中心、落到别的区、无城市还只到街道 —— 一律作废。
+      // 拿不到 geo 行（说明这条结论来路不明）也作废：宁可重算一次，也不留一个解释不了的数。
+      const usable =
+        geo &&
+        !isDowngradedMatch({
+          address,
+          level: geo.level,
+          formatted: geo.formatted ?? '',
+          fromFallback: inferCity(address, fallbackCity).source === 'fallback',
+        });
+      if (usable) {
+        mark.run(COMMUTE_ENGINE_VERSION, row.id);
+      } else {
+        reset.run(row.id);
+        dropped++;
+      }
+    }
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
+
+  if (dropped) {
+    // 【关键】失败也要清：旧口径留下的 ok=0 缓存（比如被 30001/错坐标害的）会在 6 小时内
+    // 直接把错误原样抛回去，根本不会再去问一次高德 —— 表现就是「代码明明修好了，重算还是同样的错」。
+    const geo = db.prepare('DELETE FROM geo_cache WHERE ok = 0').run();
+    const plan = db.prepare('DELETE FROM commute_cache WHERE ok = 0').run();
+    console.log(
+      `[迁移] ${dropped} 单的旧通勤结论用了不可信的坐标，已作废重算；` +
+        `顺带清掉 ${geo.changes} 条定位失败缓存、${plan.changes} 条规划失败缓存（旧口径的失败不作数）`,
+    );
+  }
+}
+
+// 必须等 geo_cache 建好表再跑（就是上面那段 DDL），所以放在文件末尾而不是 db.ts 里
+migrateCommuteEngineOnce();
 
 export interface DailyQuota {
   readonly limit: number;

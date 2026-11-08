@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseMessage, type ParsedOrder } from './parser/parse.ts';
+import { COMMUTE_ENGINE_VERSION } from './commute/types.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = process.env.JIAJIAO_DATA ?? resolve(here, '../../data');
@@ -76,7 +77,9 @@ CREATE TABLE IF NOT EXISTS orders (
   commute_address    TEXT,
   commute_cache_key  TEXT,
   commute_checked_at TEXT,
-  commute_error      TEXT
+  commute_error      TEXT,
+  -- 算这条结论时的口径版本（见 COMMUTE_ENGINE_VERSION）。口径一变，旧值自动作废重算
+  commute_engine     TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_orders_hourly   ON orders(salary_hourly DESC);
@@ -123,6 +126,8 @@ const ADDED_ORDERS_COLUMNS: Record<string, string> = {
   commute_cache_key: 'TEXT',
   commute_checked_at: 'TEXT',
   commute_error: 'TEXT',
+  // 2026-11-08：口径版本列。老库里没有它，补上后 needsWork 会让旧结论重算
+  commute_engine: 'TEXT',
 };
 
 export function migrateColumns(conn: DatabaseSync, table: string, columns: Record<string, string>) {
@@ -149,6 +154,12 @@ db.exec(`
   UPDATE orders SET sent_at = first_seen WHERE sent_at IS NULL;
   UPDATE raw_messages SET sent_at = imported_at WHERE sent_at IS NULL;
 `);
+
+/**
+ * 通勤旧结论的口径迁移**不在这里**，在 `commute/cache.ts` 末尾：
+ * 它要读 `geo_cache.level` 才知道一条旧结论当初是不是建在「区县/乡镇」这种粗坐标上，
+ * 而 geo_cache 这张表是 cache.ts 建的 —— 在 db.ts 里跑会撞上「表还不存在」。
+ */
 
 /**
  * 把连接交给同进程的其他持久化模块（通勤缓存 / 配额计数）。
@@ -510,6 +521,8 @@ export interface OrderQuery {
    * 进去补地址、看详情，它不参与任何通勤排序，两者不冲突。
    */
   commuteFailed?: boolean;
+  /** 通勤口径版本：默认取当前版本，测试可指定旧版本模拟老库 */
+  engine?: string;
   limit?: number;
 }
 
@@ -562,6 +575,8 @@ function rowToOrder(r: Record<string, unknown>) {
     commuteCacheKey: (r.commute_cache_key as string) ?? null,
     commuteCheckedAt: (r.commute_checked_at as string) ?? null,
     commuteError: (r.commute_error as string) ?? null,
+    // 口径版本：和 COMMUTE_ENGINE_VERSION 不一致就说明这条结论是按旧规则算的
+    commuteEngine: (r.commute_engine as string) ?? null,
   };
 }
 
@@ -614,7 +629,9 @@ export function listOrders(q: OrderQuery) {
     // 否则两个条件互斥，用户点进去永远看到空列表。
     where.push("commute_status = 'failed'");
   } else if (q.sort === 'commute' || typeof q.maxCommuteMinutes === 'number') {
-    where.push("commute_status = 'ok' AND commute_minutes IS NOT NULL");
+    // 口径过期的旧结论也算「没算完」：它是按旧规则算出来的数，不该参与通勤排序
+    where.push("commute_status = 'ok' AND commute_minutes IS NOT NULL AND COALESCE(commute_engine, '') = ?");
+    params.push(q.engine ?? COMMUTE_ENGINE_VERSION);
   }
   // 「算不出」那一栏里 commute_minutes 全是 NULL，再叠一个上限只会得到空列表
   if (typeof q.maxCommuteMinutes === 'number' && !q.commuteFailed) {
@@ -720,6 +737,8 @@ export interface CommutePatch {
   /** 这次计算用的地址：地址被增量补全改了之后，据此判定旧结果作废 */
   address?: string | null;
   cacheKey?: string | null;
+  /** 算这条结论时用的口径版本（COMMUTE_ENGINE_VERSION） */
+  engine?: string | null;
   error?: string | null;
 }
 
@@ -728,7 +747,7 @@ export function updateOrderCommute(id: number, patch: CommutePatch): void {
     `UPDATE orders SET
        commute_status = ?, commute_minutes = ?, commute_distance = ?, commute_transfers = ?,
        commute_fare = ?, commute_origin_id = ?, commute_address = ?, commute_cache_key = ?,
-       commute_checked_at = ?, commute_error = ?
+       commute_checked_at = ?, commute_error = ?, commute_engine = ?
      WHERE id = ?`,
   ).run(
     patch.status,
@@ -741,16 +760,23 @@ export function updateOrderCommute(id: number, patch: CommutePatch): void {
     patch.cacheKey ?? null,
     now(),
     patch.error ?? null,
+    patch.engine ?? null,
     id,
   );
 }
 
-/** 已算完（ok）的单子数：用于判断「通勤排序现在有没有意义」 */
-export function countCommuteReady(): number {
+/**
+ * 已算完（ok）的单子数：用于判断「通勤排序现在有没有意义」。
+ * 口径过期的旧结论不算「算完」—— 它马上会被重算，计进来只会让进度条虚高。
+ */
+export function countCommuteReady(engine: string): number {
   return (
-    db.prepare("SELECT COUNT(*) AS n FROM orders WHERE commute_status = 'ok' AND commute_minutes IS NOT NULL").get() as {
-      n: number;
-    }
+    db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM orders
+         WHERE commute_status = 'ok' AND commute_minutes IS NOT NULL AND COALESCE(commute_engine, '') = ?`,
+      )
+      .get(engine) as { n: number }
   ).n;
 }
 
@@ -773,9 +799,16 @@ export interface CommuteCandidate {
   commuteCheckedAt: string | null;
   commuteAddress: string | null;
   commuteOriginId: number | null;
+  commuteEngine: string | null;
 }
 
-export function listCommuteCandidates(input: { originId: number; failedBefore: string; limit?: number }): CommuteCandidate[] {
+export function listCommuteCandidates(input: {
+  originId: number;
+  /** 当前口径版本：库里存的版本不一致就说明结论过期，要重算 */
+  engine: string;
+  failedBefore: string;
+  limit?: number;
+}): CommuteCandidate[] {
   const limit = input.limit ?? 30;
   return db
     .prepare(
@@ -785,7 +818,8 @@ export function listCommuteCandidates(input: { originId: number; failedBefore: s
               commute_status    AS commuteStatus,
               commute_checked_at AS commuteCheckedAt,
               commute_address   AS commuteAddress,
-              commute_origin_id AS commuteOriginId
+              commute_origin_id AS commuteOriginId,
+              commute_engine    AS commuteEngine
          FROM orders
         WHERE address IS NOT NULL AND address <> ''
           AND COALESCE(mode, '') <> '线上'
@@ -794,12 +828,13 @@ export function listCommuteCandidates(input: { originId: number; failedBefore: s
             OR commute_status <> 'ok'
             OR commute_address IS NOT address
             OR commute_origin_id IS NOT ?
+            OR COALESCE(commute_engine, '') <> ?
           )
           AND NOT (commute_status = 'failed' AND commute_checked_at IS NOT NULL AND commute_checked_at >= ?)
         ORDER BY id ASC
         LIMIT ?`,
     )
-    .all(input.originId, input.failedBefore, limit) as unknown as CommuteCandidate[];
+    .all(input.originId, input.engine, input.failedBefore, limit) as unknown as CommuteCandidate[];
 }
 
 /** 一条「通勤有问题的单」：算不出（failed）或者还没轮到（pending） */
@@ -822,18 +857,18 @@ export interface CommuteIssue {
  *
  * 线上单不算：它们不需要通勤，出现在「有问题」的清单里只是噪音。
  */
-export function listCommuteIssues(limit = 200): CommuteIssue[] {
+export function listCommuteIssues(engine: string, limit = 200): CommuteIssue[] {
   const rows = db
     .prepare(
       `SELECT id, order_no, address, commute_status, commute_error, commute_checked_at
          FROM orders
         WHERE address IS NOT NULL AND address <> ''
           AND COALESCE(mode, '') <> '线上'
-          AND (commute_status = 'failed' OR commute_status IS NULL)
+          AND (commute_status = 'failed' OR commute_status IS NULL OR COALESCE(commute_engine, '') <> ?)
         ORDER BY (commute_status = 'failed') DESC, id ASC
         LIMIT ?`,
     )
-    .all(limit) as unknown as Record<string, unknown>[];
+    .all(engine, limit) as unknown as Record<string, unknown>[];
 
   return rows.map((r) => ({
     id: r.id as number,
@@ -849,16 +884,16 @@ export function listCommuteIssues(limit = 200): CommuteIssue[] {
  * 有地址、但还没算出通勤的单子数：后端据此告诉界面「还有 N 单在算」。
  * 线上单不算 —— 它永远不会被算，计进来只会让状态条一直挂着一句「还有 N 单没算」。
  */
-export function countCommutePending(): number {
+export function countCommutePending(engine: string): number {
   return (
     db
       .prepare(
         `SELECT COUNT(*) AS n FROM orders
          WHERE address IS NOT NULL AND address <> ''
            AND COALESCE(mode, '') <> '线上'
-           AND (commute_status IS NULL OR commute_status = 'failed')`,
+           AND (commute_status IS NULL OR commute_status = 'failed' OR COALESCE(commute_engine, '') <> ?)`,
       )
-      .get() as { n: number }
+      .get(engine) as { n: number }
   ).n;
 }
 

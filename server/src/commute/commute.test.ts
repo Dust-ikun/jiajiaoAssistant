@@ -10,7 +10,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CommuteError, QuotaExceededError } from './types.ts';
+import { COMMUTE_ENGINE_VERSION, CommuteError, QuotaExceededError } from './types.ts';
 import type { CommuteOption, CommuteProvider, GeoPoint } from './types.ts';
 
 let failed = 0;
@@ -60,7 +60,7 @@ class FakeProvider implements CommuteProvider {
     this.geoCalls.push(address);
     const p = this.points[address];
     if (!p) throw new CommuteError(`定位不到 ${address}`);
-    return { location: p, formatted: address, level: '兴趣点' };
+    return { location: p, formatted: address, level: '兴趣点', city: null, adcode: null };
   }
 
   async planTransit(_origin: GeoPoint, _dest: GeoPoint, departAt: Date): Promise<CommuteOption[]> {
@@ -327,8 +327,8 @@ try {
     const limited = db.listOrders({ maxCommuteMinutes: 20 });
     check('通勤上限筛选同样排除未算完的', limited.length, 0);
 
-    check('ready 计数', db.countCommuteReady(), 2);
-    check('pending 计数（含算失败的）', db.countCommutePending() >= 2, true);
+    check('ready 计数', db.countCommuteReady(COMMUTE_ENGINE_VERSION), 2);
+    check('pending 计数（含算失败的）', db.countCommutePending(COMMUTE_ENGINE_VERSION) >= 2, true);
   }
 
   /* ---------------------------------------------------------------- *
@@ -441,7 +441,7 @@ try {
 
   console.log('\n[13] 线上单：不算通勤、不占配额、不计入「还没算」');
   {
-    const pendingBefore = db.countCommutePending();
+    const pendingBefore = db.countCommutePending(COMMUTE_ENGINE_VERSION);
     db.importMessage({
       text: `家教编号: 2026110617
 学员地址: 线上
@@ -460,13 +460,82 @@ try {
     await service.queue.drain();
     check('一次高德都不问', [provider.geoCalls.length, provider.transitCalls], [geoBefore, transitBefore]);
     check('通勤保持 null（既没算，也没算失败）', row.commuteStatus, null);
-    check('不把「还有 N 单没算出通勤」一直挂着', db.countCommutePending(), pendingBefore);
+    check('不把「还有 N 单没算出通勤」一直挂着', db.countCommutePending(COMMUTE_ENGINE_VERSION), pendingBefore);
 
     // 清单：这些单子在按通勤排序的列表里看不到，只能靠它
-    const issues = db.listCommuteIssues();
+    const issues = db.listCommuteIssues(COMMUTE_ENGINE_VERSION);
     check('清单里没有线上单（它不需要通勤，别当问题单）', issues.some((i) => i.orderNo === '2026110617'), false);
     check('算不出的单在清单里', issues.filter((i) => i.status === 'failed').map((i) => i.orderNo), ['2026110601']);
     check('清单带原因，界面才能说清为什么', issues[0]?.error?.includes('定位不到'), true);
+  }
+
+  /* ---------------------------------------------------------------- *
+   * 七、跨城单回归：佛山被当成广州算成 24 分钟（2026-11-08 报上来的那个数）
+   * ---------------------------------------------------------------- */
+  console.log('\n[14] 城市推断：地址自己说清在哪个城市');
+  {
+    const { inferCity, isDowngradedMatch, poiNameCoverage } = await import('./city.ts');
+
+    check('写了「佛山市」→ 佛山', inferCity('佛山市南海区桂城街道堑坊村').city, '佛山');
+    check('只写区名也算（群里常写「南海桂城」）', inferCity('南海桂城怡翠花园').city, '佛山');
+    check('顺德一样', inferCity('顺德大良新桂路').city, '佛山');
+    check('广州区名照旧', inferCity('海珠昌岗').city, '广州');
+    check('显式城市优先于区名', inferCity('佛山市南海区').source, 'explicit');
+    check('多个城市并存取最先出现的', inferCity('广州天河 佛山南海').city, '广州');
+    check('看不出城市 → 标 fallback（后面按更严的规则拦）', inferCity('某某花园', '广州'), { city: '广州', source: 'fallback' });
+
+    const gz = '广东省广州市天河区桂城街道';
+    const foshan = '广东省佛山市南海区桂城街道堑坊村';
+    const base = { address: '佛山市南海区桂城街道堑坊村', level: '乡镇', fromFallback: false };
+    check('写着南海区、结果落在天河区 → 拒收', isDowngradedMatch({ ...base, formatted: gz }), true);
+    check('落在同一个区、街道级 → 放行（村退到街道还能用）', isDowngradedMatch({ ...base, formatted: foshan }), false);
+    check('珠江帝景(海珠区) 被解析到黄埔区珠江 → 拒收', isDowngradedMatch({ address: '珠江帝景(海珠区)', level: '村庄', formatted: '广东省广州市黄埔区珠江', fromFallback: false }), true);
+    check('退到整个区（区名还碰巧对）→ 也拒收', isDowngradedMatch({ address: '天河壹品', level: '区县', formatted: '广东省广州市天河区', fromFallback: false }), true);
+    check('退到整个区（中海金沙湾）→ 拒收', isDowngradedMatch({ address: '白云中海金沙湾', level: '区县', formatted: '广东省广州市白云区', fromFallback: false }), true);
+    check('退到整个市 → 拒收', isDowngradedMatch({ address: '广州市某某路', level: '市', formatted: '广东省广州市', fromFallback: false }), true);
+    check('只有城市没有区名、退到街道级 → 放行', isDowngradedMatch({ address: '佛山市桂城街道堑坊村', level: '乡镇', formatted: '广东省佛山市南海区桂城街道', fromFallback: false }), false);
+    check('门牌号级不受影响', isDowngradedMatch({ address: '广州市白云区丽城路49号', level: '门牌号', formatted: '广东省广州市白云区丽城路49号', fromFallback: false }), false);
+    check('fallback 出来的粗级别一律拒收', isDowngradedMatch({ address: '某某花园', level: '乡镇', formatted: '广东省广州市天河区某镇', fromFallback: true }), true);
+
+    // POI 搜索会返回一堆东西，必须能挑出真的（实测数据都来自 2026-11-08 的真实返回）
+    check('名字完全对得上', poiNameCoverage('易通大厦', '广州市天河区黄埔大道易通大厦（暨大旁边）'), 1);
+    check('小区名带前缀也能认', poiNameCoverage('城投珠江·天河壹品', '天河壹品') >= 0.4, true);
+    check('原文写错一个字（瀚→翰）也能认', poiNameCoverage('东荣翰林苑', '天河东荣瀚林苑') >= 0.4, true);
+    check('无关 POI 认不出来（搜金沙湾返回的是达美乐）', poiNameCoverage('达美乐比萨(锦佳店)', '白云中海金沙湾') < 0.4, true);
+    check('同字不同店排在后头', poiNameCoverage('城投珠江·天河壹品', '天河壹品') > poiNameCoverage('壹品服饰(时尚天河商业广场店)', '天河壹品'), true);
+  }
+
+  console.log('\n[15] 地理编码缓存按「城市 + 地址」分键');
+  {
+    cache.writeGeo(
+      '广州',
+      '桂城街道堑坊村',
+      {
+        result: { location: { lng: 113.3455, lat: 23.144 }, formatted: '广东省广州市天河区桂城街道', level: '乡镇', city: '广州', adcode: '440106' },
+        error: null,
+      },
+      NOW,
+    );
+    check('按广州能读回', cache.readGeo('广州', '桂城街道堑坊村', NOW)?.result?.formatted, '广东省广州市天河区桂城街道');
+    check('按佛山读不到（不会把广州的坐标当成佛山的）', cache.readGeo('佛山', '桂城街道堑坊村', NOW), null);
+    check('键里带城市', cache.geoKey('佛山', '  桂城街道堑坊村 '), '佛山|桂城街道堑坊村');
+  }
+
+  console.log('\n[16] 口径升级：旧结论自动作废重算，不继续显示错值');
+  {
+    const row = db.listOrders({ q: '2026101803' })[0]!;
+    check('新算的结论带版本号', row.commuteEngine, COMMUTE_ENGINE_VERSION);
+
+    // 模拟老库：这条是旧口径算的（版本列为空）
+    db.getDb().prepare('UPDATE orders SET commute_engine = NULL WHERE id = ?').run(row.id);
+    const pendingBefore = db.countCommutePending(COMMUTE_ENGINE_VERSION);
+    check('版本对不上就算「还没算」', pendingBefore >= 1, true);
+    check('旧口径的结论不进通勤排序（红线：没算完的不许混进来）', db.listOrders({ sort: 'commute' }).some((o) => o.id === row.id), false);
+    check('待算集合会捞到它', service.enqueuePending(30).candidates >= 1, true);
+    await service.queue.drain();
+    check('重算后版本补回来', db.getOrder(row.id)!.commuteEngine, COMMUTE_ENGINE_VERSION);
+    check('列表里还是那条结论（地址没变，值本来就对）', db.getOrder(row.id)!.commuteMinutes, 35);
+    check('算完才回到通勤排序里', db.listOrders({ sort: 'commute' }).some((o) => o.id === row.id), true);
   }
 } finally {
   try {

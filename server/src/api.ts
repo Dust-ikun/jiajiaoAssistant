@@ -19,6 +19,7 @@ import { EMPTY_PROFILE, loadProfile, ProfileError, profilePath, saveProfile, typ
 import { matchOrder } from './match/match.ts';
 import { createAmapProvider } from './commute/amap.ts';
 import { createCommuteService, type CommuteService } from './commute/service.ts';
+import { COMMUTE_ENGINE_VERSION } from './commute/types.ts';
 import { clipboardWatcher } from './clipboard.ts';
 
 /**
@@ -80,7 +81,7 @@ export function createApp(commute: CommuteService = createCommuteService({ provi
      */
     const commuteFailed = req.query.commute === 'failed';
     const sortUsed: OrderQuery['sort'] =
-      requested === 'commute' && !commuteFailed && countCommuteReady() === 0 ? 'hourly' : requested;
+      requested === 'commute' && !commuteFailed && countCommuteReady(COMMUTE_ENGINE_VERSION) === 0 ? 'hourly' : requested;
 
     const q: OrderQuery = {
       q: typeof req.query.q === 'string' && req.query.q ? req.query.q : undefined,
@@ -144,7 +145,7 @@ export function createApp(commute: CommuteService = createCommuteService({ provi
    * 这些单子在按通勤排序的列表里看不到，不给清单等于让用户对着一句「还有 N 单没算」发呆。
    */
   app.get('/api/commute/issues', (_req, res) => {
-    const items = listCommuteIssues();
+    const items = listCommuteIssues(COMMUTE_ENGINE_VERSION);
     res.json({
       failed: items.filter((i) => i.status === 'failed').length,
       pending: items.filter((i) => i.status === 'pending').length,

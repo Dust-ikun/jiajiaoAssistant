@@ -21,10 +21,24 @@ export interface GeocodeResult {
   formatted: string;
   /** 省/市/区/道路/门牌/兴趣点，命中的级别越细，通勤越可信 */
   level: string | null;
+  /** 高德自己说的城市（已去掉「市」字）。留着是为了和地址里写的城市对账，也方便排查 */
+  city: string | null;
+  adcode: string | null;
 }
 
 /** 出行方式。当前只做公交（决策 6），驾车/骑行后续加实现即可 */
 export type CommuteMode = 'transit';
+
+/**
+ * 通勤结论的「计算口径」版本，落进 `orders.commute_engine`。
+ *
+ * 【为什么结论要带版本】同一单地址没变、出发点没变，但代码改了（比如地理编码换了城市推断），
+ * 旧结论就不可信了。只按「地址/出发点变没变」判断是否重算，会让错值一直挂在界面上 ——
+ * 用户看到的还是那个 24 分钟。带上版本号后，口径一变，全库自动重算。
+ *
+ * v1（无此列）＝城市写死广州；v2＝按地址推断城市 + 城市对账 + 拒收降级匹配。
+ */
+export const COMMUTE_ENGINE_VERSION = 'geocode-city-v2';
 
 /**
  * 一套换乘方案。
@@ -59,6 +73,13 @@ export interface CommuteProvider {
 }
 
 export class CommuteError extends Error {
+  /**
+   * 高德的 infocode，例如 10001（key 无效）、10003（超配额）、30001（引擎处理不了这个查询）。
+   * 【为什么要带出来】30001 不是「坏 key」也不是「网络断」——换个接口（POI 搜索）同一串地址
+   * 往往能查到。上层据此决定「降级重试」还是「直接失败」，只看 message 字符串太脆。
+   */
+  infocode: string | null = null;
+
   // name 要显式设置：Node 的类型剥离不改类名，默认 name 会是 'Error'，日志里分不清是哪类失败
   constructor(message: string) {
     super(message);

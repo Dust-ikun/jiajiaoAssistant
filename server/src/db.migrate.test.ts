@@ -11,6 +11,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { COMMUTE_ENGINE_VERSION } from './commute/types.ts';
 
 let failed = 0;
 let passed = 0;
@@ -114,6 +115,7 @@ try {
   check('补出阶段 5 的 commute_status', columns.has('commute_status'), true);
   check('补出阶段 5 的 commute_minutes', columns.has('commute_minutes'), true);
   check('补出阶段 5 的 commute_cache_key', columns.has('commute_cache_key'), true);
+  check('补出通勤口径版本列', columns.has('commute_engine'), true);
 
   const originCols = new DatabaseSync(file);
   const originNames = (originCols.prepare('PRAGMA table_info(origins)').all() as { name: string }[]).map((r) => r.name);
@@ -166,6 +168,60 @@ try {
     check('第二次执行不报错（重复 ALTER 会炸）', threw, false);
     check('列只加一次', names.filter((n) => n === 'sent_at').length, 1);
     mem.close();
+  }
+
+  console.log('\n[5] 旧通勤结论：建在「区县/乡镇」级坐标上的全部作废重算（2026-11-08）');
+  {
+    // geo_cache 是 cache.ts 建的表，必须等它加载过才能插旧数据
+    const cache = await import('./commute/cache.ts');
+
+    db.importMessage({
+      text: `家教编号: GZa2164A
+学员地址: 佛山市南海区桂城街道堑坊村
+辅导科目: 英语
+时间安排: 每周1次，每次2小时
+教员要求: 男女不限
+老师薪水: 65元/h`,
+      sentAt: '2026-11-07T10:00:00',
+    });
+    db.importMessage({
+      text: `家教编号: 2026110701
+学员地址: 海珠昌岗
+辅导科目: 数学
+时间安排: 每周1次
+教员要求: 男女不限
+老师薪水: 100元/h`,
+      sentAt: '2026-11-07T10:00:00',
+    });
+
+    const f = db.listOrders({ q: 'GZa2164A' })[0]!;
+    const g = db.listOrders({ q: '2026110701' })[0]!;
+    // 造出「旧口径算出来的数」：有结论、没有版本号（等同于升级前的库）
+    db.updateOrderCommute(f.id, { status: 'ok', minutes: 24, fare: 2, originId: 1, address: f.address });
+    db.updateOrderCommute(g.id, { status: 'ok', minutes: 26, fare: 2, originId: 1, address: g.address });
+
+    // 旧库的 geo_cache 行：键是纯地址（没有「城市|」前缀）
+    const insertGeo = db.getDb().prepare(
+      `INSERT OR REPLACE INTO geo_cache (address_key, address, ok, lng, lat, formatted, level, error, fetched_at)
+       VALUES (?, ?, 1, ?, ?, ?, ?, NULL, ?)`,
+    );
+    // 佛山那条：被旧的「写死广州」坑过，只匹配到区县
+    insertGeo.run(cache.normalizeAddress(f.address!), f.address, 113.4806, 23.1814, '广东省广州市黄埔区', '区县', '2026-11-07T15:00:00.000Z');
+    // 广州那条：当初就匹配到住宅区，坐标可信
+    insertGeo.run(cache.normalizeAddress(g.address!), g.address, 113.2759, 23.0898, '广东省广州市海珠区昌岗', '住宅区', '2026-11-07T15:00:00.000Z');
+    check('前提：两条旧结论都在', [db.getOrder(f.id)!.commuteMinutes, db.getOrder(g.id)!.commuteMinutes], [24, 26]);
+
+    cache.migrateCommuteEngineOnce();
+
+    check(
+      '坐标只到区县的旧结论被清空（那个 24 分钟不许再出现）',
+      [db.getOrder(f.id)!.commuteStatus, db.getOrder(f.id)!.commuteMinutes],
+      [null, null],
+    );
+    check('坐标够细的旧结论保留（不必白烧配额）', db.getOrder(g.id)!.commuteMinutes, 26);
+    check('保留的那条打上新口径版本', db.getOrder(g.id)!.commuteEngine, COMMUTE_ENGINE_VERSION);
+    cache.migrateCommuteEngineOnce();
+    check('重复执行是幂等的', [db.getOrder(f.id)!.commuteStatus, db.getOrder(g.id)!.commuteMinutes], [null, 26]);
   }
 } finally {
   try {
