@@ -1,5 +1,4 @@
 import type {
-  CaptureStatus,
   CommuteIssues,
   CommuteStatus,
   Filters,
@@ -21,6 +20,8 @@ export function buildQuery(f: Filters): string {
   if (f.subjects.length) p.set('subjects', f.subjects.join(','));
   if (f.modes.length) p.set('modes', f.modes.join(','));
   if (f.statuses.length) p.set('statuses', f.statuses.join(','));
+  // 群名是用户手填的自由文本，可能带逗号 —— 一个群一个参数，别用逗号拼
+  for (const g of f.groups) p.append('groups', g);
   if (f.verdict) p.set('verdict', f.verdict);
   if (f.minHourly.trim()) p.set('minHourly', f.minHourly.trim());
   if (f.maxCommuteMinutes.trim()) p.set('maxCommuteMinutes', f.maxCommuteMinutes.trim());
@@ -81,6 +82,16 @@ export async function importText(payload: {
   });
   if (!res.ok) await reason(res, '导入失败');
   return (await res.json()) as ImportResult;
+}
+
+/**
+ * 删掉一条单。
+ * 【为什么需要】解析规则修好之后，库里按旧规则并出来的脏单不会自己消失 ——
+ * 它带着错的地址和缝在一起的要求，还占着「可接」的位置。删掉再重粘一次才是干净的。
+ */
+export async function deleteOrder(id: number): Promise<void> {
+  const res = await fetch(`/api/orders/${id}`, { method: 'DELETE' });
+  if (!res.ok) await reason(res, '删除失败');
 }
 
 export async function patchOrder(id: number, patch: Partial<Pick<Order, 'status' | 'starred'>>): Promise<Order> {
@@ -163,9 +174,4 @@ export async function fetchCommuteIssues(): Promise<CommuteIssues> {
   return (await res.json()) as CommuteIssues;
 }
 
-/** 剪贴板自动导入的状态（开着没、最近导了哪几单；正文不会出现在这里） */
-export async function fetchCaptureStatus(): Promise<CaptureStatus> {
-  const res = await fetch('/api/capture/status');
-  if (!res.ok) throw new Error('读取自动导入状态失败');
-  return (await res.json()) as CaptureStatus;
-}
+

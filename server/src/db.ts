@@ -156,6 +156,19 @@ db.exec(`
 `);
 
 /**
+ * 清掉假群名：剪贴板自动入库期间（2026-11-08 之前）写进去的 group_name 是字面量「剪贴板」。
+ *
+ * 【为什么要清】它不是群名，是那批消息的**来源通道**。留着会让「来源群」筛选里
+ * 多出一个叫「剪贴板」的假分组，点进去是一堆互不相干的群混在一起 —— 而群名存在的
+ * 全部意义就是「这单该回哪个群找人」。置空之后卡片显示「群未填」，语义是诚实的。
+ * 来源信息没丢：raw_messages.source 里仍然是 'clipboard'。
+ * 幂等：清完之后不会再有这个值（功能已移除），重复启动无副作用。
+ */
+db.exec(`
+  UPDATE raw_messages SET group_name = NULL WHERE group_name = '剪贴板';
+`);
+
+/**
  * 通勤旧结论的口径迁移**不在这里**，在 `commute/cache.ts` 末尾：
  * 它要读 `geo_cache.level` 才知道一条旧结论当初是不是建在「区县/乡镇」这种粗坐标上，
  * 而 geo_cache 这张表是 cache.ts 建的 —— 在 db.ts 里跑会撞上「表还不存在」。
@@ -294,7 +307,14 @@ const UPSERT_SQL = `
       WHEN length(excluded.warnings) < length(orders.warnings) THEN excluded.warnings
       ELSE orders.warnings END,
     occurrences = orders.occurrences + 1,
-    last_seen   = excluded.last_seen
+    last_seen   = excluded.last_seen,
+    -- 来源群：raw_msg_id 一直指「最早那条原文」，所以要看它有没有群名。
+    -- 原来那条没群名（用户第一次粘完才想起来填），就改指向这条带了群名的原文 ——
+    -- 语义仍是「最早**可知**的群」，不会因为后来转发到别的群就跳过去。
+    raw_msg_id = CASE
+      WHEN (SELECT group_name FROM raw_messages WHERE id = orders.raw_msg_id) IS NULL
+      THEN excluded.raw_msg_id
+      ELSE orders.raw_msg_id END
 `;
 
 /* ------------------------------------------------------------------ *
@@ -375,92 +395,35 @@ function assignDedupeKeys(parsed: ParsedOrder[]): string[] {
 }
 
 /**
- * 导入一条（或一段）群消息。
- * 同一条消息重复导入会被 content_hash 拦掉；同一单子被不同群转发、或分多次复制，
- * 会按 dedupe_key 走增量补全。
+ * 把一批解析结果写进 orders（INSERT … ON CONFLICT 增量补全）。
+ *
+ * 【为什么重复导入也要走这里】用户删掉一条按旧规则并出来的脏单之后，一定会重新粘同一段原文；
+ * 那时 content_hash 仍然命中老消息。如果那条路只做「次数 +1」的 UPDATE，
+ * 删掉的单就永远回不来了 —— 界面上表现为「重粘了一次，什么都没发生」。
  */
-export function importMessage(input: ImportInput): ImportResult {
-  const text = input.text.trim();
-  const lines = text ? text.split('\n').length : 0;
-  if (!text) {
-    return { orders: 0, inserted: 0, duplicated: 0, nonOrderText: true, diagnostics: buildDiagnostics([], null, 0) };
-  }
-
-  const contentHash = createHash('sha1').update(text.replace(/\s+/g, '')).digest('hex');
-  const existed = db.prepare('SELECT id FROM raw_messages WHERE content_hash = ?').get(contentHash) as
-    | { id: number }
-    | undefined;
-
-  if (existed) {
-    const ts = now();
-    const sentAt = input.sentAt ?? null;
-    // 同一条原文再导入一次：刷新发生次数，顺手补上当初缺失的发送时间
-    db.prepare('UPDATE raw_messages SET sent_at = COALESCE(sent_at, ?) WHERE id = ?').run(sentAt, existed.id);
-
-    // 【为什么按 dedupe_key 找行而不是按 raw_msg_id】同一条原文第一次导入时，
-    // 单子可能已经由另一段（更早复制的）原文先建好了，那行的 raw_msg_id 指向的是旧消息，
-    // 按 raw_msg_id 更新会一行都匹配不到，次数也不会涨。
-    const again = parseMessage(text, sentAt);
-    const keys = assignDedupeKeys(again);
-    if (keys.length) {
-      const holders = keys.map(() => '?').join(',');
-      db.prepare(
-        `UPDATE orders SET occurrences = occurrences + 1, last_seen = ?, sent_at = COALESCE(sent_at, ?)
-         WHERE dedupe_key IN (${holders})`,
-      ).run(ts, sentAt, ...keys);
-    }
-    return {
-      orders: keys.length,
-      inserted: 0,
-      duplicated: keys.length,
-      nonOrderText: false,
-      diagnostics: buildDiagnostics(again, sentAt, lines),
-    };
-  }
-
-  const parsed = parseMessage(text, input.sentAt ?? null);
-  if (!parsed.length) {
-    return { orders: 0, inserted: 0, duplicated: 0, nonOrderText: true, diagnostics: buildDiagnostics([], null, lines) };
-  }
-
-  const ts = now();
-  /**
-   * 【为什么空着的时候退到 ts（导入时间）】微信里复制出来的文本**绝大多数不带时间头**，
-   * 原来这里 `?? null` 的结果是：绝大多数单子的 sent_at 是空的 —— 卡片上永远显示
-   * 「发送时间未知」，时效这一列等于没有，`sort=newest` 也只能把它们全排到最后。
-   *
-   * 现在的语义：原文写了时间头就用它（那确实是真的发送时间，比导入时间准）；
-   * 没写才落到导入时间。两个来源都明确可知，不做任何猜测。
-   */
-  const msgSentAt = input.sentAt ?? parsed[0]?.sentAt ?? ts;
-  const msgRow = db
-    .prepare(
-      `INSERT INTO raw_messages (group_name, sender, sent_at, raw_text, content_hash, source, imported_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(input.groupName ?? null, input.sender ?? null, msgSentAt, text, contentHash, input.source ?? 'manual', ts);
-
-  const rawMsgId = Number(msgRow.lastInsertRowid);
-
+function writeOrders(
+  list: ParsedOrder[],
+  keys: string[],
+  rawMsgId: number,
+  fallbackSentAt: string | null,
+  ts: string,
+): { inserted: number; duplicated: number } {
   const insert = db.prepare(UPSERT_SQL);
   const findDedupe = db.prepare('SELECT id FROM orders WHERE dedupe_key = ?');
-
   let inserted = 0;
   let duplicated = 0;
 
-  const dedupeKeys = assignDedupeKeys(parsed);
-
-  parsed.forEach((o: ParsedOrder, i: number) => {
-    if (findDedupe.get(dedupeKeys[i]!)) duplicated++;
+  list.forEach((o: ParsedOrder, i: number) => {
+    if (findDedupe.get(keys[i]!)) duplicated++;
     else inserted++;
     insert.run(
-      dedupeKeys[i]!,
+      keys[i]!,
       rawMsgId,
       i,
       o.orderNo,
       o.statusTag,
-      // 单条自己的时间头 > 调用方显式给的时间 > 导入时间（见上面 msgSentAt 的说明）
-      o.sentAt ?? input.sentAt ?? ts,
+      // 单条自己的时间头 > 调用方显式给的时间 > 导入时间（见 msgSentAt 的说明）
+      o.sentAt ?? fallbackSentAt ?? ts,
       o.district,
       o.area,
       o.address,
@@ -491,6 +454,91 @@ export function importMessage(input: ImportInput): ImportResult {
     );
   });
 
+  return { inserted, duplicated };
+}
+
+/**
+ * 导入一条（或一段）群消息。
+ * 同一条消息重复导入会被 content_hash 拦掉；同一单子被不同群转发、或分多次复制，
+ * 会按 dedupe_key 走增量补全。
+ */
+export function importMessage(input: ImportInput): ImportResult {
+  const text = input.text.trim();
+  const lines = text ? text.split('\n').length : 0;
+  if (!text) {
+    return { orders: 0, inserted: 0, duplicated: 0, nonOrderText: true, diagnostics: buildDiagnostics([], null, 0) };
+  }
+
+  const contentHash = createHash('sha1').update(text.replace(/\s+/g, '')).digest('hex');
+  const existed = db.prepare('SELECT id FROM raw_messages WHERE content_hash = ?').get(contentHash) as
+    | { id: number }
+    | undefined;
+
+  if (existed) {
+    const ts = now();
+    const sentAt = input.sentAt ?? null;
+    /**
+     * 同一条原文再导入一次：刷新发生次数，顺手补上当初缺失的发送时间。
+     * 群名同理 —— 现实里很常见「先粘了一段，事后才想起来没填群名」，
+     * 那时 content_hash 会直接把整段挡成重复导入，如果这里不补，群名就永远补不上了。
+     */
+    db.prepare(
+      'UPDATE raw_messages SET sent_at = COALESCE(sent_at, ?), group_name = COALESCE(NULLIF(group_name, ?), ?) WHERE id = ?',
+    ).run(sentAt, '', input.groupName ?? null, existed.id);
+
+    /**
+     * 【为什么按 dedupe_key 找行而不是按 raw_msg_id】同一条原文第一次导入时，
+     * 单子可能已经由另一段（更早复制的）原文先建好了，那行的 raw_msg_id 指向的是旧消息，
+     * 按 raw_msg_id 更新会一行都匹配不到，次数也不会涨。
+     * 走 writeOrders 而不是裸 UPDATE：顺带把「被用户删掉的单」重新建出来（见函数注释）。
+     */
+    const again = parseMessage(text, sentAt);
+    const keys = assignDedupeKeys(again);
+    if (!keys.length) {
+      return {
+        orders: 0,
+        inserted: 0,
+        duplicated: 0,
+        nonOrderText: false,
+        diagnostics: buildDiagnostics(again, sentAt, lines),
+      };
+    }
+    const w = writeOrders(again, keys, existed.id, sentAt, ts);
+    return {
+      orders: keys.length,
+      inserted: w.inserted,
+      duplicated: w.duplicated,
+      nonOrderText: false,
+      diagnostics: buildDiagnostics(again, sentAt, lines),
+    };
+  }
+
+  const parsed = parseMessage(text, input.sentAt ?? null);
+  if (!parsed.length) {
+    return { orders: 0, inserted: 0, duplicated: 0, nonOrderText: true, diagnostics: buildDiagnostics([], null, lines) };
+  }
+
+  const ts = now();
+  /**
+   * 【为什么空着的时候退到 ts（导入时间）】微信里复制出来的文本**绝大多数不带时间头**，
+   * 原来这里 `?? null` 的结果是：绝大多数单子的 sent_at 是空的 —— 卡片上永远显示
+   * 「发送时间未知」，时效这一列等于没有，`sort=newest` 也只能把它们全排到最后。
+   *
+   * 现在的语义：原文写了时间头就用它（那确实是真的发送时间，比导入时间准）；
+   * 没写才落到导入时间。两个来源都明确可知，不做任何猜测。
+   */
+  const msgSentAt = input.sentAt ?? parsed[0]?.sentAt ?? ts;
+  const msgRow = db
+    .prepare(
+      `INSERT INTO raw_messages (group_name, sender, sent_at, raw_text, content_hash, source, imported_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    )
+    .run(input.groupName ?? null, input.sender ?? null, msgSentAt, text, contentHash, input.source ?? 'manual', ts);
+
+  const rawMsgId = Number(msgRow.lastInsertRowid);
+  const dedupeKeys = assignDedupeKeys(parsed);
+  const { inserted, duplicated } = writeOrders(parsed, dedupeKeys, rawMsgId, input.sentAt ?? null, ts);
+
   return {
     orders: parsed.length,
     inserted,
@@ -507,6 +555,8 @@ export interface OrderQuery {
   subjects?: string[];
   modes?: string[];
   statuses?: string[];
+  /** 只看某几个群里来的单子（群名存在 raw_messages 上，见 listOrders 里的子查询） */
+  groups?: string[];
   minHourly?: number;
   maxHourly?: number;
   starred?: boolean;
@@ -577,6 +627,13 @@ function rowToOrder(r: Record<string, unknown>) {
     commuteError: (r.commute_error as string) ?? null,
     // 口径版本：和 COMMUTE_ENGINE_VERSION 不一致就说明这条结论是按旧规则算的
     commuteEngine: (r.commute_engine as string) ?? null,
+    /**
+     * 这条单是从哪个群粘进来的。
+     * 【为什么不在 orders 表里存一份】群名只属于「原文」这一层（raw_messages.group_name），
+     * 列表查询时顺手带出来就行。存两份就要考虑两份不同步（比如用户改群名）。
+     * 注意语义是「最早那条原文所在的群」—— 同一单被转发的次数记在 occurrences 里。
+     */
+    groupName: (r.group_name as string) ?? null,
   };
 }
 
@@ -610,6 +667,16 @@ export function listOrders(q: OrderQuery) {
   if (q.statuses?.length) {
     where.push(`status IN (${q.statuses.map(() => '?').join(',')})`);
     params.push(...q.statuses);
+  }
+  /**
+   * 按来源群筛。群名在 raw_messages 上，用子查询而不是 JOIN ——
+   * JOIN 之后 `id`/`sent_at`/`raw_text` 三列两边都有，上面那些没加表名的 WHERE 会直接 ambiguous。
+   */
+  if (q.groups?.length) {
+    where.push(
+      `(SELECT group_name FROM raw_messages WHERE id = orders.raw_msg_id) IN (${q.groups.map(() => '?').join(',')})`,
+    );
+    params.push(...q.groups);
   }
   if (typeof q.minHourly === 'number') {
     where.push('salary_hourly >= ?');
@@ -654,7 +721,8 @@ export function listOrders(q: OrderQuery) {
           ? 'commute_minutes ASC, salary_hourly IS NULL, salary_hourly DESC'
           : 'salary_hourly IS NULL, salary_hourly DESC';
 
-  const sql = `SELECT * FROM orders ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+  const sql = `SELECT orders.*, (SELECT group_name FROM raw_messages WHERE id = orders.raw_msg_id) AS group_name
+               FROM orders ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
                ORDER BY ${orderBy} LIMIT ?`;
   params.push(q.limit ?? 500);
 
@@ -685,6 +753,19 @@ export function getMeta() {
     db.prepare("SELECT COUNT(*) AS n FROM orders WHERE status = 'new'").get() as { n: number }
   ).n;
 
+  /**
+   * 来源群。取的是「这单最早那条原文的群」——
+   * 一个单被转发到别的群时 raw_msg_id 不变，所以不会因为这些转发凭空多出几个群。
+   */
+  const groups = db
+    .prepare(
+      `SELECT r.group_name AS value, COUNT(*) AS count
+       FROM orders o JOIN raw_messages r ON r.id = o.raw_msg_id
+       WHERE r.group_name IS NOT NULL AND r.group_name <> ''
+       GROUP BY r.group_name ORDER BY count DESC`,
+    )
+    .all() as { value: string; count: number }[];
+
   return {
     total,
     fresh,
@@ -692,6 +773,7 @@ export function getMeta() {
     stages: [...stageMap.entries()].map(([value, count]) => ({ value, count })),
     subjects: [...subjectMap.entries()].map(([value, count]) => ({ value, count })).sort((a, b) => b.count - a.count),
     modes: pick('mode'),
+    groups,
   };
 }
 

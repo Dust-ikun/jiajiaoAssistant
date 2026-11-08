@@ -51,7 +51,7 @@ function FacetGroup({
 }
 
 export function FilterSidebar({ meta, filters, commuteFailedCount, onChange, onReset }: Props) {
-  const toggle = (key: 'districts' | 'stages' | 'subjects' | 'modes', v: string) => {
+  const toggle = (key: 'districts' | 'stages' | 'subjects' | 'modes' | 'groups', v: string) => {
     const cur = filters[key];
     onChange({ [key]: cur.includes(v) ? cur.filter((x) => x !== v) : [...cur, v] } as Partial<F>);
   };
@@ -61,6 +61,7 @@ export function FilterSidebar({ meta, filters, commuteFailedCount, onChange, onR
     filters.stages.length +
     filters.subjects.length +
     filters.modes.length +
+    filters.groups.length +
     (filters.verdict ? 1 : 0) +
     (filters.minHourly ? 1 : 0) +
     (filters.maxCommuteMinutes ? 1 : 0) +
@@ -190,6 +191,13 @@ export function FilterSidebar({ meta, filters, commuteFailedCount, onChange, onR
             点进去的单子跟普通单一样能展开、改状态、复制原文，只是少了通勤方案
           </p>
         </section>
+
+        {/*
+          来源群放第一个 facet：用户是按群干活儿的 —— 一单要联系哪个群的老师，
+          是「这个单子从哪来」决定的，找不到群等于这条单没法用。
+          没填过群名时这一组整块不出现（FacetGroup 自己判空）。
+        */}
+        <FacetGroup title="来源群" items={meta?.groups} selected={filters.groups} onToggle={(v) => toggle('groups', v)} />
 
         <FacetGroup title="区域" items={meta?.districts} selected={filters.districts} onToggle={(v) => toggle('districts', v)} />
         <FacetGroup title="学段" items={meta?.stages} selected={filters.stages} onToggle={(v) => toggle('stages', v)} />

@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { fetchCaptureStatus, fetchMeta, fetchOrders, patchOrder } from './api';
+import { deleteOrder, fetchMeta, fetchOrders, patchOrder } from './api';
 import { FilterSidebar } from './components/Filters';
 import { ImportDialog } from './components/ImportDialog';
 import { OrderCard } from './components/OrderCard';
 import { SettingsDrawer, type SettingsTab } from './components/SettingsDrawer';
-import type { CaptureStatus, Filters, Meta, Order, OrderStatus, OrdersResponse } from './types';
+import type { Filters, Meta, Order, OrderStatus, OrdersResponse } from './types';
 import { SORT_LABEL, STATUS_LABEL } from './types';
 import { cn } from './cn';
 
@@ -15,6 +15,7 @@ const DEFAULT_FILTERS: Filters = {
   subjects: [],
   modes: [],
   statuses: [],
+  groups: [],
   verdict: '',
   minHourly: '',
   maxCommuteMinutes: '',
@@ -39,7 +40,6 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab>('profile');
-  const [capture, setCapture] = useState<CaptureStatus | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
 
@@ -78,51 +78,6 @@ export default function App() {
   useEffect(() => {
     reloadMeta();
   }, [reloadMeta]);
-
-  /**
-   * 剪贴板自动导入的反馈。
-   *
-   * 【为什么界面必须自己轮询】自动导入发生在服务端，界面完全看不见 ——
-   * 用户复制完一段切回来看，如果列表没动、也没有任何提示，就会以为功能坏了，
-   * 然后又去手动粘一遍（于是走了「合并」，还以为是重复导入）。
-   * 所以这里盯着 `/api/capture/status`：出现新摘要就弹提示 + 重拉列表。
-   */
-  const captureSeen = useRef<string | null>(null);
-  const captureReady = useRef(false);
-  useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const s = await fetchCaptureStatus();
-        if (!alive) return;
-        setCapture(s);
-        const newest = s.recent[0];
-        if (newest && newest.at !== captureSeen.current) {
-          const isFirstLook = !captureReady.current;
-          captureSeen.current = newest.at;
-          captureReady.current = true;
-          // 首次打开页面时把历史摘要当基线，不弹旧提示
-          if (!isFirstLook) {
-            setToast(
-              newest.orders > 0
-                ? `剪贴板识别到 ${newest.orders} 单（新增 ${newest.inserted}${newest.duplicated ? `，合并 ${newest.duplicated}` : ''}）`
-                : '剪贴板内容没识别出单子',
-            );
-            void load(true);
-            reloadMeta();
-          }
-        }
-      } catch {
-        /* 服务没起或接口不存在：静默，不打扰 */
-      }
-    };
-    void tick();
-    const timer = setInterval(tick, 4000);
-    return () => {
-      alive = false;
-      clearInterval(timer);
-    };
-  }, [load, reloadMeta]);
 
   /**
    * 通勤是后台串行算的：请求返回时这些单子还没数。
@@ -167,6 +122,25 @@ export default function App() {
       }
     },
     [reloadMeta],
+  );
+
+  /**
+   * 删一条（只删单子，群消息原文还留着 —— 重粘同一段原文仍能认出它）。
+   * 先在本地摘掉再去请求：删完不该还躺在列表里；失败就提示 + 重新拉一遍，别留下假象。
+   */
+  const remove = useCallback(
+    async (id: number) => {
+      setOrders((prev) => prev.filter((o) => o.id !== id));
+      setExpandedId((cur) => (cur === id ? null : cur));
+      try {
+        await deleteOrder(id);
+        reloadMeta();
+      } catch {
+        setToast('删除失败');
+        void load(true);
+      }
+    },
+    [reloadMeta, load],
   );
 
   const toggleExpand = (o: Order) => {
@@ -218,18 +192,7 @@ export default function App() {
           </div>
         </div>
 
-        {capture?.running && (
-          <button
-            onClick={() => openSettings('capture')}
-            title="剪贴板自动导入已开启：复制一段群消息就会自动入库"
-            className="chip bg-emerald-50 text-emerald-700 hover:bg-emerald-100"
-          >
-            <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
-            自动导入
-          </button>
-        )}
-
-        <button onClick={() => openSettings('profile')} title="资质 / 出发点 / 通勤状态 / 自动导入" className="btn-ghost">
+        <button onClick={() => openSettings('profile')} title="资质 / 出发点 / 通勤状态" className="btn-ghost">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.7 1.7 0 00.3 1.9l.1.1a2 2 0 11-2.8 2.8l-.1-.1a1.7 1.7 0 00-1.9-.3 1.7 1.7 0 00-1 1.5V21a2 2 0 11-4 0v-.1A1.7 1.7 0 008.9 19a1.7 1.7 0 00-1.9.3l-.1.1a2 2 0 11-2.8-2.8l.1-.1a1.7 1.7 0 00.3-1.9 1.7 1.7 0 00-1.5-1H3a2 2 0 110-4h.1A1.7 1.7 0 004.6 8.9a1.7 1.7 0 00-.3-1.9l-.1-.1a2 2 0 112.8-2.8l.1.1a1.7 1.7 0 001.9.3H10a1.7 1.7 0 001-1.5V3a2 2 0 114 0v.1a1.7 1.7 0 001 1.5 1.7 1.7 0 001.9-.3l.1-.1a2 2 0 112.8 2.8l-.1.1a1.7 1.7 0 00-.3 1.9V10a1.7 1.7 0 001.5 1H21a2 2 0 110 4h-.1a1.7 1.7 0 00-1.5 1z" />
@@ -342,6 +305,7 @@ export default function App() {
                   expanded={expandedId === o.id}
                   onToggle={() => toggleExpand(o)}
                   onPatch={(p) => void patch(o.id, p)}
+                  onDelete={() => void remove(o.id)}
                 />
               ))}
             </div>
@@ -352,6 +316,7 @@ export default function App() {
       <ImportDialog
         open={importOpen}
         onClose={() => setImportOpen(false)}
+        groups={meta?.groups ?? []}
         onImported={() => {
           void load();
           reloadMeta();

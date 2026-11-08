@@ -30,6 +30,11 @@ export interface Order {
   id: number;
   orderNo: string | null;
   statusTag: string | null;
+  /**
+   * 这条单是从哪个群粘进来的（最早那条原文的群）。
+   * 只在导入时填了群名才有值；没填就是 null，界面显示「来源群未填」。
+   */
+  groupName: string | null;
   /** 消息发送时间。列表的「新不新」只能看它，绝不看导入时间 */
   sentAt: string | null;
   district: string | null;
@@ -88,6 +93,8 @@ export interface Meta {
   stages: Facet[];
   subjects: Facet[];
   modes: Facet[];
+  /** 来源群（导入时填的群名）。用来按群筛选，也用来在导入框里给出历史群名 */
+  groups: Facet[];
 }
 
 export interface CommuteOption {
@@ -240,23 +247,6 @@ export interface ImportResult {
   diagnostics: ImportDiagnostics;
 }
 
-/** 剪贴板自动导入的一次摘要（后端只给编号与计数，不含正文） */
-export interface CaptureRecord {
-  at: string;
-  orders: number;
-  inserted: number;
-  duplicated: number;
-  orderNos: string[];
-}
-
-export interface CaptureStatus {
-  supported: boolean;
-  running: boolean;
-  /** 没开或开不了的原因 */
-  reason: string | null;
-  recent: CaptureRecord[];
-}
-
 /** 锚点类型 → 中文说明。左边是 parse.ts 的 AnchorKind，右边是「这长什么样」 */
 export const ANCHOR_LABEL: Record<string, string> = {
   hashId: '#1138',
@@ -281,6 +271,8 @@ export interface Filters {
   subjects: string[];
   modes: string[];
   statuses: string[];
+  /** 来源群（导入时填的群名） */
+  groups: string[];
   verdict: '' | Verdict;
   minHourly: string;
   /** 只看通勤不超过 N 分钟的单子（未算完的一律不进） */

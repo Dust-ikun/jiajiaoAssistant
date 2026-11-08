@@ -87,7 +87,15 @@ try {
   legacy.exec(OLD_SCHEMA);
   legacy
     .prepare(
-      `INSERT INTO raw_messages (id, raw_text, content_hash, imported_at) VALUES (1, '老消息', 'hash-old', '2026-10-01T10:00:00Z')`,
+      `INSERT INTO raw_messages (id, group_name, raw_text, content_hash, imported_at)
+       VALUES (1, '广州家教群YF11群', '老消息', 'hash-old', '2026-10-01T10:00:00Z')`,
+    )
+    .run();
+  // 剪贴板自动入库时代留下的痕迹：group_name 是字面量「剪贴板」，不是真群名
+  legacy
+    .prepare(
+      `INSERT INTO raw_messages (id, group_name, raw_text, content_hash, source, imported_at)
+       VALUES (2, '剪贴板', '剪贴板来的消息', 'hash-clip', 'clipboard', '2026-10-20T10:00:00Z')`,
     )
     .run();
   legacy
@@ -134,6 +142,18 @@ try {
     check('旧单没有分档薪水就是空数组', row.salaryTiers, []);
     check('出现次数没被重置', row.occurrences, 3);
     check('旧单没算过通勤就是 null（不是 failed，更不是 0）', [row.commuteStatus, row.commuteMinutes], [null, null]);
+  }
+
+  console.log('\n[2.5] 「剪贴板」这个假群名被清掉（2026-11-08 移除自动入库）');
+  {
+    const msg = (hash: string) =>
+      db.getDb().prepare('SELECT group_name, source FROM raw_messages WHERE content_hash = ?').get(hash) as {
+        group_name: string | null;
+        source: string;
+      };
+    check('假群名置空（卡片会显示「群未填」，语义诚实）', msg('hash-clip').group_name, null);
+    check('来源通道没丢（source 仍是 clipboard）', msg('hash-clip').source, 'clipboard');
+    check('真实群名一个都不动', msg('hash-old').group_name, '广州家教群YF11群');
   }
 
   console.log('\n[3] 迁移后新导入能写进新列');

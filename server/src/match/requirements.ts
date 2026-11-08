@@ -29,12 +29,23 @@ export interface Requirements {
   needsExperience: RequirementItem<true> | null;
   /** 带「优先 / 最好 / 可协商」的原句，界面原样展示，不参与硬判定 */
   softPrefs: string[];
+  /**
+   * 这段要求自身对不上的证据（如同时写了「女老师」和「男女不限」）。
+   *
+   * 【为什么要单独记】这种矛盾不是「要求严格」，而是**两张单被并成一张**的痕迹
+   * （切块失败时最常见）：`女老师 经验丰富 有耐心` 后面缝上另一张单的 `男女不限`，
+   * 于是性别维度被「不限」整段覆盖，判定给出「可接」—— 这个「可接」是假的。
+   * 有矛盾就不许报可接，交给「存疑」让人自己看一眼。
+   */
+  conflicts: string[];
   raw: string;
 }
 
 const CLAUSE_SPLIT = /[，,。；;！!、#]/;
 const SOFT_RE = /优先|最好|更佳|更优|择优|可协商|都可以|优先考虑/;
 const GENDER_UNLIMITED_RE = /(?:男女|男\s*\/\s*女|女\s*\/\s*男|性别)[^，,。;；!！]{0,6}(?:不限|均可|皆可)/;
+/** 同一个规则的全局版：查「要求矛盾」时要先把它从原文里删干净 */
+const GENDER_UNLIMITED_G = new RegExp(GENDER_UNLIMITED_RE.source, 'g');
 
 function empty(): Requirements {
   return {
@@ -47,6 +58,7 @@ function empty(): Requirements {
     languages: null,
     needsExperience: null,
     softPrefs: [],
+    conflicts: [],
     raw: '',
   };
 }
@@ -171,6 +183,32 @@ export function parseRequirements(raw: string | null | undefined): Requirements 
     if (/有.{0,8}经验|经验丰富/.test(clause)) {
       req.needsExperience = setItem(req.needsExperience, { value: true, hard: !soft, evidence: clause });
     }
+  }
+
+  /**
+   * 要求自相矛盾 = 多半是多张单粘在一起了（切块失败）。
+   * 只认「性别」这一维：它是最容易一眼看出矛盾、也最容易让判定翻成「可接」的一维
+   * （`不限` 一出现，整段里的「女老师」就全被跳过）。
+   *
+   * 【怎么把「不限」本身摘出去】先把「男女不限 / 均可」这类短语从原文里**删掉**，
+   * 再看剩下的话里有没有硬性性别要求：
+   *   `男/女老师均可`        → 删完什么都不剩 → 不矛盾（这句话本来就是「不限」）
+   *   `男女不限，女老师优先`  → 剩下「女老师优先」，带「优先」→ 不矛盾（不限但偏好）
+   *   `女老师 经验丰富 有耐心 男女不限 985211` → 剩下「女老师 经验丰富 有耐心」→ 矛盾 ✓
+   * 最后一种正是两张单缝在一起的样子：不摘掉「不限」，整段里的「女老师」都会被跳过，
+   * 判定就会给出一个假的「可接」。
+   */
+  const hardGenders = new Set<'男' | '女'>();
+  for (const clauseRaw of (genderUnlimited ? text.replace(GENDER_UNLIMITED_G, ' ') : text).split(CLAUSE_SPLIT)) {
+    const clause = clauseRaw.trim();
+    if (!clause || SOFT_RE.test(clause)) continue;
+    const g = detectGenderReq(clause);
+    if (g) hardGenders.add(g);
+  }
+  if (hardGenders.has('男') && hardGenders.has('女')) {
+    req.conflicts.push('同时要求「男老师」和「女老师」');
+  } else if (genderUnlimited && hardGenders.size) {
+    req.conflicts.push('「男女不限」和指定性别的句子同时存在');
   }
 
   return req;

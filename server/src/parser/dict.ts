@@ -47,6 +47,9 @@ export const FIELD_ALIASES: Record<string, FieldKey> = {
   上课地址: 'address',
   上课地点: 'address',
   授课地点: 'address',
+  // xc2102 那单写的是「授课地址」：和「授课地点」只差一个字，漏了它整条单就没有地址、
+  // 也没有区域（通勤永远算不出），而界面上只显示「地址未识别」—— 看起来像原文没写
+  授课地址: 'address',
   辅导地址: 'address', // 广东线下 TFY 群
   辅导地点: 'address', // 同上
   地点: 'address',
@@ -86,6 +89,10 @@ export const FIELD_ALIASES: Record<string, FieldKey> = {
   // 科目本身整段文本都能扫到，不会丢
   年级科目: 'grade',
   年级学科: 'grade',
+  // 「【年级及科目】：初二，全科，课内」—— 也归 grade：学段只能从这一段里读出来，
+  // 科目另有「扫全文」兜底（见 buildOrder 里 subjectText 为空时 detectSubjects(all)）
+  年级及科目: 'grade',
+  年级及学科: 'grade',
   学生性别: 'studentGender', // T3
   性别: 'studentGender',
   现阶段成绩: 'currentScore', // T3（值常常是空的）
@@ -197,6 +204,9 @@ export const SUBJECT_MAIN: { name: string; keywords: string[] }[] = [
     keywords: ['羽毛球', '篮球', '足球', '游泳', '网球', '乒乓球', '跳绳', '体能', '田径'],
   },
   { name: '小语种', keywords: ['日语', '法语', '德语', '西班牙语', '韩语', '俄语'] },
+  // 「全科」不是一门学科，但它回答了「补什么」这个问题；不认的话这种单会顶一条
+  // 「未识别到科目」，而原文其实写得很清楚（`初二，全科，课内`）
+  { name: '全科', keywords: ['全科'] },
 ];
 
 /**

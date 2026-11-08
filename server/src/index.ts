@@ -5,7 +5,6 @@ import express from 'express';
 import { createApp } from './api.ts';
 import { createAmapProvider } from './commute/amap.ts';
 import { createCommuteService, DEFAULT_DAILY_LIMIT, parseDailyLimit } from './commute/service.ts';
-import { clipboardWatcher, maybeStartClipboardWatcher } from './clipboard.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -41,14 +40,12 @@ app.listen(PORT, HOST, () => {
   console.log(`[jiajiao] API 已启动 → http://${HOST}:${PORT}`);
 });
 
-// 剪贴板自动导入：默认关，.env 里写 CLIPBOARD_AUTO_IMPORT=1 才开（见 clipboard.ts 的说明）
-maybeStartClipboardWatcher();
-
-// 服务退出时把 powershell 子进程一起收掉，否则它会一直挂在后台读剪贴板
-const shutdown = () => {
-  clipboardWatcher.stop();
-  process.exit(0);
-};
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
-process.on('exit', () => clipboardWatcher.stop());
+/**
+ * 剪贴板自动导入已于 2026-11-08 整体移除（原 `clipboard.ts`）。
+ *
+ * 【为什么砍掉】它读的是剪贴板**文本**，而群名不在文本里（微信复制不带来源），
+ * 只能把 groupName 写死成「剪贴板」—— 那个值不是群名，会把「来源群」筛选和
+ * 「这单该回哪个群找人」一起弄脏。空着还能意识到要补，写错了意识不到。
+ * 现在唯一的入库入口是界面上的「粘贴导入」：一次粘贴 + 选群，信息是完整的。
+ * 原文仍然全部落在 `raw_messages`，所以将来要做别的入口也不缺原料。
+ */

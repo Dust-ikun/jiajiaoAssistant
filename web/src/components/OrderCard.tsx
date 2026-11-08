@@ -52,9 +52,11 @@ interface Props {
   expanded: boolean;
   onToggle: () => void;
   onPatch: (patch: Partial<Pick<Order, 'status' | 'starred'>>) => void;
+  /** 删掉这一条（脏单用：例如按旧规则把几张单并成一张的那种） */
+  onDelete: () => void;
 }
 
-export function OrderCard({ order, expanded, onToggle, onPatch }: Props) {
+export function OrderCard({ order, expanded, onToggle, onPatch, onDelete }: Props) {
   const [copied, setCopied] = useState(false);
   const [detail, setDetail] = useState<OrderCommuteDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -162,6 +164,16 @@ export function OrderCard({ order, expanded, onToggle, onPatch }: Props) {
             {o.freqPerWeek ? <span>每周 {o.freqPerWeek} 次</span> : null}
             {o.hoursPerSession ? <span>每次 {o.hoursPerSession}h</span> : null}
             {o.orderNo && <span className="font-mono text-[11px] text-slate-400">#{o.orderNo}</span>}
+            {/* 来源群：一单要联系哪个群的老师，全看这一格；没填就明确说「未填」，别让人以为是程序丢了 */}
+            {o.groupName ? (
+              <span className="max-w-[11rem] truncate text-[11.5px] text-teal-700" title={`来源群：${o.groupName}`}>
+                群 · {o.groupName}
+              </span>
+            ) : (
+              <span className="text-[11.5px] text-slate-300" title="导入时没填群名；重新粘一次并填上群名就能补">
+                群未填
+              </span>
+            )}
             {/* 时效：原文写了时间头就是发送时间，没写就是导入时间；超过一天变色，这种单基本已被接掉 */}
             <span
               className={cn('text-[11.5px]', stale ? 'text-rose-500' : 'text-slate-400')}
@@ -267,6 +279,15 @@ export function OrderCard({ order, expanded, onToggle, onPatch }: Props) {
             <button onClick={copy} className="btn-ghost !px-2 !py-1 !text-[11.5px]">
               {copied ? '已复制' : '复制原文'}
             </button>
+            <button
+              onClick={() => {
+                if (window.confirm('删掉这一条？原文也会跟着从「这条单」里消失（库里那条群消息还在）。')) onDelete();
+              }}
+              title="删掉这条单。解析规则改过之后，旧的脏单要删掉重粘才会变干净"
+              className="btn-ghost !px-2 !py-1 !text-[11.5px] hover:!text-rose-600"
+            >
+              删除
+            </button>
           </div>
 
           <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-lg border border-slate-200 bg-white p-3 font-mono text-[12px] leading-relaxed text-slate-700">
@@ -284,6 +305,7 @@ export function OrderCard({ order, expanded, onToggle, onPatch }: Props) {
           )}
 
           <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-slate-400">
+            {o.groupName && <span>来源群 {o.groupName}</span>}
             <span>发布 {o.sentAt ? new Date(o.sentAt).toLocaleString('zh-CN') : '时间未知'}</span>
             <span>首次收录 {new Date(o.firstSeen).toLocaleString('zh-CN')}</span>
             <span>最近出现 {new Date(o.lastSeen).toLocaleString('zh-CN')}</span>

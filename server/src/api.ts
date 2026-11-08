@@ -20,7 +20,6 @@ import { matchOrder } from './match/match.ts';
 import { createAmapProvider } from './commute/amap.ts';
 import { createCommuteService, type CommuteService } from './commute/service.ts';
 import { COMMUTE_ENGINE_VERSION } from './commute/types.ts';
-import { clipboardWatcher } from './clipboard.ts';
 
 /**
  * 读资质时「坏文件不拦路」：profile.json 写坏了只让判定失效，
@@ -35,8 +34,17 @@ function currentProfile(): { profile: Profile; error: string | null } {
 }
 
 
+/**
+ * 多值参数。两种写法都收：`?subjects=数学,英语`（逗号拼接）和 `?groups=A&groups=B`（一个值一个参数）。
+ * 【为什么两种都收】群名是用户手填的自由文本，可能本身就带逗号 —— 前端对 groups 走的是
+ * 重复参数那种写法，逗号拼接留着是为了手敲 URL 方便。
+ */
 function arr(req: Request, key: string): string[] | undefined {
   const v = req.query[key];
+  if (Array.isArray(v)) {
+    const list = v.filter((x): x is string => typeof x === 'string' && Boolean(x.trim())).map((s) => s.trim());
+    return list.length ? list : undefined;
+  }
   if (typeof v !== 'string' || !v.trim()) return undefined;
   return v.split(',').map((s) => decodeURIComponent(s.trim())).filter(Boolean);
 }
@@ -90,6 +98,7 @@ export function createApp(commute: CommuteService = createCommuteService({ provi
       subjects: arr(req, 'subjects'),
       modes: arr(req, 'modes'),
       statuses: arr(req, 'statuses'),
+      groups: arr(req, 'groups'),
       minHourly: num(req, 'minHourly'),
       maxHourly: num(req, 'maxHourly'),
       starred: req.query.starred === '1',
@@ -152,9 +161,6 @@ export function createApp(commute: CommuteService = createCommuteService({ provi
       items,
     });
   });
-
-  /** 剪贴板自动导入的状态与最近几次摘要（只有编号与计数，没有正文） */
-  app.get('/api/capture/status', (_req, res) => res.json(clipboardWatcher.status()));
 
   app.get('/api/origins', (_req, res) => res.json({ items: listOrigins() }));
 

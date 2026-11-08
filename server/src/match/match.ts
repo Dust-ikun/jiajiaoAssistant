@@ -14,7 +14,7 @@ import { parseRequirements, type Requirements } from './requirements.ts';
 export type Verdict = '可接' | '存疑' | '不可接';
 
 export interface MatchReason {
-  dimension: '性别' | '学校层次' | '学位' | '身份' | '专业' | '证书' | '语言' | '经验';
+  dimension: '性别' | '学校层次' | '学位' | '身份' | '专业' | '证书' | '语言' | '经验' | '要求矛盾';
   verdict: '存疑' | '不可接';
   detail: string;
 }
@@ -66,6 +66,21 @@ function majorHit(profile: Profile, required: string): boolean {
 export function matchOrder(teacherReq: string | null | undefined, profile: Profile): MatchResult {
   const req = parseRequirements(teacherReq);
   const reasons: MatchReason[] = [];
+
+  /**
+   * 0) 要求自相矛盾：不许报「可接」。
+   *
+   * 【为什么最高优先级】矛盾几乎都是**多张单被并成一张**留下的（切块失败）。
+   * 那种单子的字段本身就是串的：一条「男女不限」会把整段里的「女老师」全部跳过，
+   * 于是判定给出一个看起来很正常的「可接」—— 比不可接危险得多，因为用户会照着去联系。
+   */
+  if (req.conflicts.length) {
+    reasons.push({
+      dimension: '要求矛盾',
+      verdict: '存疑',
+      detail: `${req.conflicts.join('；')} —— 这张单的要求对不上，多半是几条单粘在一起了，请对照原文核实`,
+    });
+  }
 
   // 1) 性别：明确写「女老师」才硬判，「女老师优先」只降存疑
   if (req.gender && req.gender.value !== '不限') {

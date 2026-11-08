@@ -1,17 +1,16 @@
 import { useEffect } from 'react';
 import { cn } from '../cn';
-import { CapturePanel } from './settings/CapturePanel';
 import { CommutePanel } from './settings/CommutePanel';
 import { OriginList } from './settings/OriginList';
 import { ProfileForm } from './settings/ProfileForm';
 
-export type SettingsTab = 'profile' | 'origins' | 'commute' | 'capture';
+/** 「自动导入」页签随剪贴板自动入库一起移除（2026-11-08），入库只剩「粘贴导入」一条路 */
+export type SettingsTab = 'profile' | 'origins' | 'commute';
 
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: 'profile', label: '我的资质' },
   { key: 'origins', label: '出发点' },
   { key: 'commute', label: '通勤状态' },
-  { key: 'capture', label: '自动导入' },
 ];
 
 interface Props {
@@ -78,7 +77,6 @@ export function SettingsDrawer({ open, tab, onTab, onClose, onProfileSaved, onOr
           {tab === 'profile' && <ProfileForm onSaved={onProfileSaved} />}
           {tab === 'origins' && <OriginList onChanged={onOriginsChanged} />}
           {tab === 'commute' && <CommutePanel onOpenOrigins={() => onTab('origins')} />}
-          {tab === 'capture' && <CapturePanel />}
         </div>
       </aside>
     </div>

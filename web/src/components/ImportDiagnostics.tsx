@@ -4,6 +4,8 @@ import { cn } from '../cn';
 
 interface Props {
   result: ImportResult;
+  /** 这次导入填的来源群（没填就是 null） */
+  groupName: string | null;
   /** 再粘一段（应对「一次只能复制一小块」的分次复制） */
   onAgain: () => void;
   onDone: () => void;
@@ -17,7 +19,7 @@ interface Props {
  * 地址被截图裁掉 → 通勤永远是「无地址」。这些都不报错，只是结果悄悄变差。
  * 把「切块依据、缺了哪些字段、置信度」当场摊开，用户才知道该补哪一段原文。
  */
-export function ImportDiagnostics({ result, onAgain, onDone }: Props) {
+export function ImportDiagnostics({ result, groupName, onAgain, onDone }: Props) {
   const d = result.diagnostics;
   const orders = d.orders;
 
@@ -35,6 +37,25 @@ export function ImportDiagnostics({ result, onAgain, onDone }: Props) {
           )}
           <span className="text-[11px] text-slate-400">{d.lines} 行</span>
         </div>
+
+        {/*
+          来源群就在这一行交代清楚。
+          【为什么必须显式回显】群名输入框是「记住上次的值」，最容易出的错不是忘填，
+          而是换了个群还带着上一条的群名 —— 那会把 B 群的单记成 A 群，而且看起来一切正常。
+          没填也要说出来：事后才知道这些单要回去找谁。
+        */}
+        {!d.nonOrder && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-[10.5px]">
+            <span className="text-slate-400">来源群</span>
+            {groupName ? (
+              <span className="chip border border-teal-200 bg-teal-50 text-teal-700">{groupName}</span>
+            ) : (
+              <span className="chip border border-amber-200 bg-amber-50 text-amber-700">
+                没填 —— 以后想回去找发单老师就找不到了
+              </span>
+            )}
+          </div>
+        )}
 
         {/* 锚点分布：这是「为什么切成了这么多块」的唯一解释 */}
         {d.anchors.length > 0 && (
@@ -64,7 +85,10 @@ export function ImportDiagnostics({ result, onAgain, onDone }: Props) {
           <div className="space-y-2 text-[12px] leading-relaxed text-slate-600">
             <p>这段文本里没有匹配到任何「单子开头」，所以一条都没入库。常见原因：</p>
             <ul className="list-disc space-y-1 pl-5 text-[11.5px] text-slate-500">
-              <li>复制时丢了编号那一行（例如 `#1138`、`110512号家教`、`家教编号: xxx`）—— 这是切块的唯一依据</li>
+              <li>
+                复制时丢了编号那一行（例如 `#1138`、`110512号家教`、`家教编号: xxx`），
+                而且整段里没有任何一组完整的「学员/科目/地址」字段
+              </li>
               <li>复制的只是群公告、寒暄，或一张截图的说明文字</li>
               <li>复制被微信截断，只剩半截字段</li>
             </ul>

@@ -148,6 +148,50 @@ try {
     check('同一张单子再转发仍然合并', [again.inserted, again.duplicated], [0, 1]);
     check('不会越滚越多', db.listOrders({}).filter((r) => r.orderNo === 'ZX2208').length, 2);
   }
+
+  /* ---------------------------------------------------------------- *
+   * 七、来源群：这单该去哪个群找发单老师
+   * ---------------------------------------------------------------- */
+  console.log('\n[7] 来源群');
+  {
+    const YF11 = `家教编号: 2026110801
+学员地址: 天河岗顶
+辅导科目: 数学
+教员要求: 男女不限
+老师薪水: 100元/h`;
+
+    db.importMessage({ text: YF11, groupName: '广州家教群YF11群' });
+    const row = db.listOrders({ q: '2026110801' })[0]!;
+    check('列表里能拿到群名', row.groupName, '广州家教群YF11群');
+    check('可以按群筛', db.listOrders({ groups: ['广州家教群YF11群'] }).some((r) => r.orderNo === '2026110801'), true);
+    check('别的群筛不到它', db.listOrders({ groups: ['不存在的群'] }).length, 0);
+    check('meta 里有群 facet', db.getMeta().groups.some((g) => g.value === '广州家教群YF11群' && g.count >= 1), true);
+
+    // 先粘了没填群名的一段，之后才补填：第二次粘同一段并带上群名，群名要补上
+    const NAKED = `家教编号: 2026110802
+学员地址: 越秀东山口
+辅导科目: 英语
+教员要求: 男女不限
+老师薪水: 120元/h`;
+    db.importMessage({ text: NAKED });
+    check('没填群名时是 null', db.listOrders({ q: '2026110802' })[0]!.groupName, null);
+    db.importMessage({ text: NAKED, groupName: '补填成功的群' });
+    check('事后补填群名能补上', db.listOrders({ q: '2026110802' })[0]!.groupName, '补填成功的群');
+
+    // 增量补全那条路（原文不同、单子是同一张）也要能补
+    db.importMessage({ text: `${NAKED}\n备注: 家长要求这周内试课`, groupName: '补填成功的群2' });
+    check('群名不会被后来的群覆盖', db.listOrders({ q: '2026110802' })[0]!.groupName, '补填成功的群');
+
+    /**
+     * 删掉脏单再重粘同一段原文 —— 这条路径原来会静默失败：
+     * content_hash 认出「这段粘过了」，只做 occurrences +1，被删掉的单永远回不来。
+     */
+    db.deleteOrder(db.listOrders({ q: '2026110801' })[0]!.id);
+    check('删掉之后列表里没有了', db.listOrders({ q: '2026110801' }).length, 0);
+    const back = db.importMessage({ text: YF11, groupName: '广州家教群YF11群' });
+    check('重粘同一段原文能建回来', [back.orders, back.inserted], [1, 1]);
+    check('群名跟着回来', db.listOrders({ q: '2026110801' })[0]!.groupName, '广州家教群YF11群');
+  }
 } finally {
   // Windows 上 SQLite 连接还开着，临时目录删不掉是可以接受的，别让清理影响结论
   try {

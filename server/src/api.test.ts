@@ -172,6 +172,17 @@ try {
     check('通勤状态随列表一起返回', orders.body.commute.blockedBy, 'no_key');
     check('列表里带判定结果', typeof orders.body.items[0].match.verdict, 'string');
 
+    /**
+     * 来源群。db 层测过一遍，但这里要确认「接口有没有把它带出来、筛选参数有没有真的传到 SQL」——
+     * 这正是 api.test.ts 存在的理由（db 层测不出「接口把参数传丢了」）。
+     */
+    check('列表带出来源群', orders.body.items.map((o: any) => o.groupName), ['住家教073', '住家教073']);
+    const byGroup = await api(`/api/orders?groups=${encodeURIComponent('住家教073')}`);
+    check('按群筛选命中', byGroup.body.total, orders.body.total);
+    check('按群筛选不会带回别的群', (await api(`/api/orders?groups=${encodeURIComponent('没有这个群')}`)).body.total, 0);
+    const metaAll = await api('/api/meta');
+    check('meta 里带群 facet（前端靠它列来源群 & 给导入框补历史）', metaAll.body.groups.map((g: any) => g.value), ['住家教073']);
+
     const status = await api('/api/commute/status');
     check('没有 key 时 blockedBy = no_key', status.body.blockedBy, 'no_key');
     check('配额度对象齐全', Object.keys(status.body.quota).sort(), ['exhausted', 'limit', 'remaining', 'used']);

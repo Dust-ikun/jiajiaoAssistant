@@ -354,10 +354,98 @@ export interface RawBlock {
 }
 
 /**
+ * 「一单只写一次」的字段。它们第二次出现 = 下一单开始了。
+ *
+ * 【为什么按「重复」而不是按「先后」判边界】六套模板的字段顺序**各不相同**
+ * （T1 是 地址→科目→学员情况→时间→要求→薪资，T2 是 地址→年级→科目→情况→时间→要求→报酬），
+ * 拿「字段先后」当顺序信号会立刻把 T1 切成一堆碎片（实测：2 单切成 4 单）。
+ * 能跨模板复用的只有这一条：学员、年级、科目、地址、课酬在一张单里只写一遍。
+ * 时间/要求/备注不在里面 —— 这几个字段本来就常分几行补充（parseFields 里就是按「拼接」处理的）。
+ */
+const DUP_KEYS = new Set<FieldKey>(['orderNo', 'address', 'subjects', 'studentInfo', 'grade', 'studentGender', 'salary']);
+
+/**
+ * 「一单的开头」字段：只要上一单已经写完，它们出现就开新单。
+ *
+ * 【为什么不含课酬】T1/T2 的课酬本来就写在最后一行，拿它当开头会把一单劈成两半。
+ */
+const HEAD_KEYS = new Set<FieldKey>(['studentInfo', 'grade', 'subjects', 'address']);
+
+/**
+ * 锚点之外的第二道切法：**字段组重启**。
+ *
+ * 【为什么需要它】锚点是「编号」，可现实里一整段粘贴只带一个编号、后面连着几张没编号的单
+ * （2026-11-08 用户粘的那一段就是：广州26110102H 后面跟着 3 单）。
+ * 只按锚点切 ⇒ 4 单并成 1 单：科目只剩最后一个、地址被最后一张覆盖、
+ * 要求被几张单的句子缝在一起（于是「女老师」和「男女不限」同时出现，判定还判成了「可接」）。
+ *
+ * 两道判据，都是「宁可少切」：
+ *   1. **单值字段重复**（地址/科目/学员/年级/课酬）：一单不会写两遍 → 一定是下一单；
+ *   2. **开头字段出现在一单写完之后**：已有地址 + 已有要求（骨架齐了）再来 学员/年级/科目/地址。
+ *      只看开头字段不够 —— T6 的 `编号→地址→科目→学员情况` 里科目和学员情况都在前三行，
+ *      那是同一单；所以要求上一单已经把地址和要求都写完。
+ *
+ * 【为什么短尾巴要并回去】切完若某一组只有 1 个字段行，那不可能是单子，
+ * 只可能是上一单被微信折行的续行 —— 并回上一组，宁可少切也不凭空造单。
+ */
+function cutByFieldRestart(lines: string[]): string[][] {
+  const groups: string[][] = [];
+  let cur: string[] = [];
+  const seen = new Set<FieldKey>();
+  let fieldCount = 0;
+  let hasAddress = false;
+  let hasReq = false;
+
+  const flush = () => {
+    groups.push(cur);
+    cur = [];
+    seen.clear();
+    fieldCount = 0;
+    hasAddress = false;
+    hasReq = false;
+  };
+
+  for (const line of lines) {
+    const hit = readFieldLine(line);
+    if (hit) {
+      const dup = seen.has(hit.key) && DUP_KEYS.has(hit.key);
+      const afterDone = HEAD_KEYS.has(hit.key) && hasAddress && hasReq;
+      // 至少两个字段才允许切：编号行 + 一行字段不构成一单，切了只会造碎片
+      if ((dup || afterDone) && fieldCount >= 2) flush();
+      seen.add(hit.key);
+      fieldCount++;
+      if (hit.key === 'address') hasAddress = true;
+      if (hit.key === 'teacherReq') hasReq = true;
+    }
+    cur.push(line);
+  }
+  if (cur.length) groups.push(cur);
+  if (groups.length <= 1) return groups;
+
+  const merged: string[][] = [groups[0]!];
+  for (const group of groups.slice(1)) {
+    if (group.filter(looksLikeFieldLine).length < 2) merged[merged.length - 1]!.push(...group);
+    else merged.push(group);
+  }
+  return merged;
+}
+
+/** 一组行 → 一个块。只有第一组能继承锚点：编号属于命中它的那张单 */
+function toBlocks(groups: string[][], anchor: AnchorHit | null, sentAt: string | null): RawBlock[] {
+  return groups.map((group, i) => ({
+    lines: group,
+    regionHint: group.find(isPureDistrictLine) ?? null,
+    sentAt,
+    anchor: i === 0 ? anchor : null,
+  }));
+}
+
+/**
  * 把一段聊天记录切成多个单子。
  *
  * 【为什么先找锚点】六套模板里唯一可靠的边界信号就是编号行；
  * 空行分段在微信里根本不成立（用户复制时分多次、也不带空行）。
+ * 但锚点只解决「有编号的单」，段内还要再过一遍字段组重启（见 cutByFieldRestart）。
  */
 export function splitBlocks(input: string, fallbackSentAt: string | null = null): RawBlock[] {
   const lines = normalizeLines(input);
@@ -387,13 +475,13 @@ export function splitBlocks(input: string, fallbackSentAt: string | null = null)
     const end = k + 1 < anchors.length ? starts[k + 1] : lines.length;
     const body = lines.slice(starts[k], end).filter((l) => l !== '' && !isNoiseLine(l));
     if (!body.some(looksLikeFieldLine)) continue; // 只有编号没有字段 → 不是单子
-    const regionHint = body.find(isPureDistrictLine) ?? null;
-    blocks.push({ lines: body, regionHint, sentAt: anchors[k].sentAt, anchor: anchors[k].hit });
+    // 锚点之间还可能藏着几单没编号的（一整段只贴了一个编号是最常见的情况）
+    blocks.push(...toBlocks(cutByFieldRestart(body), anchors[k].hit, anchors[k].sentAt));
   }
   return blocks;
 }
 
-/** 没有锚点时的兜底：靠空行分段，且必须至少有两个字段行 */
+/** 没有锚点时的兜底：先按空行分段，段内再按字段组重启切，每段至少两个字段行 */
 function splitByBlank(lines: string[], fallback: string | null): RawBlock[] {
   const out: RawBlock[] = [];
   let cur: string[] = [];
@@ -402,7 +490,7 @@ function splitByBlank(lines: string[], fallback: string | null): RawBlock[] {
     const body = cur.filter((l) => l !== '' && !isNoiseLine(l));
     cur = [];
     if (!body.length || body.filter(looksLikeFieldLine).length < 2) return;
-    out.push({ lines: body, regionHint: body.find(isPureDistrictLine) ?? null, sentAt: cursor, anchor: null });
+    out.push(...toBlocks(cutByFieldRestart(body), null, cursor));
   };
   for (const l of lines) {
     const t = matchSentAt(l);
@@ -790,7 +878,17 @@ const CN_COUNT = '一二三四五六七两';
 
 function parseFreq(schedule: string): number | null {
   if (!schedule) return null;
-  let m = schedule.match(new RegExp(`每\\s*(?:周|星期|礼拜)\\s*(\\d+|[${CN_COUNT}])\\s*次`));
+  /**
+   * 「每周4–6次」这种**区间频次**必须排在单值前面：不认区间的话，
+   * `每周(\d+)次` 匹配不上，最后那条「提到每周就按 1 次」的兜底会给出 1 —— 一个看上去
+   * 完全正常的错数字（月薪单会照着它除，时薪能差一倍）。区间取下限，和薪资同一口径。
+   * 连字符要认全：原文里 `4–6` 用的是 en dash（U+2013），不是减号。
+   */
+  let m = schedule.match(
+    new RegExp(`每\\s*(?:周|星期|礼拜)\\s*(\\d+|[${CN_COUNT}])\\s*[-~–—至到]\\s*(\\d+|[${CN_COUNT}])\\s*次`),
+  );
+  if (m) return toNum(m[1]);
+  m = schedule.match(new RegExp(`每\\s*(?:周|星期|礼拜)\\s*(\\d+|[${CN_COUNT}])\\s*次`));
   if (m) return toNum(m[1]);
   m = schedule.match(new RegExp(`[一1]\\s*周\\s*(\\d+|[${CN_COUNT}])\\s*次`));
   if (m) return toNum(m[1]);
