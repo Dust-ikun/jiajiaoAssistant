@@ -291,6 +291,12 @@ function createWindow(): BrowserWindow {
     show: false,
     backgroundColor: '#f8fafc',
     title: '家教单助手',
+    /**
+     * 窗口图标只在**开发期**需要显式指定：这时跑的是 node_modules 里的 electron.exe，
+     * 任务栏认的是那个原子的图标。打包后 exe 自己的图标已被 electron-builder 写入，
+     * 窗口默认继承它 —— 再指一个 resources 里不存在的路径只会让图标变空。
+     */
+    icon: dev ? join(here, '../build/icon.png') : undefined,
     autoHideMenuBar: true,
     webPreferences: {
       // 界面只是本地服务的客户端，不需要任何 Node 能力
