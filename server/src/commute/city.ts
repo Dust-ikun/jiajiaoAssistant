@@ -22,9 +22,6 @@ import { CITIES, DISTRICTS } from '../parser/dict.ts';
  */
 const FOSHAN_DISTRICTS = ['南海', '顺德', '禅城', '三水', '高明'];
 
-/** 广州各区 = 解析层那份区名表减掉佛山五区（区名表是共用的，不另抄一份，免得两边漂移） */
-const GUANGZHOU_DISTRICTS = DISTRICTS.filter((d) => !FOSHAN_DISTRICTS.includes(d));
-
 /** 城市是怎么定下来的：越靠前越可信，fallback 意味着地址里连一点地理约束都没有 */
 export type CitySource = 'explicit' | 'district' | 'fallback';
 
@@ -34,27 +31,72 @@ export interface CityHint {
 }
 
 /**
+ * 城市词后面紧跟这些东西，说明它是**路名**不是城市名：
+ * 「中山一路」「中山八路」「中山大道」「东莞庄路」「广州大道中」。
+ *
+ * 【为什么必须挡】实测「越秀区中山一路梅花村」里的「中山」让城市推断落到广东省中山市，
+ * 而中山真有一条中山一路、level 还是「道路」—— 城市对账反而通过了，区名对账才把它拦下，
+ * 最终只能报「只匹配到广东省中山市中山一路」。错在第一层输入，后面所有闸门都在错的城里对账。
+ */
+const ROAD_SUFFIX = /^[\u4e00-\u9fa5]{0,2}(路|道|街|桥|巷|涌|站)/;
+
+/**
+ * 这个位置上的城市词，是真的在说「这个城市」吗。
+ *
+ * 三层判据，从硬到软：
+ *   1. 后面紧跟「市」（广州市、中山市）—— 最硬，一定是城市
+ *   2. 后面紧跟区名（广州番禺、佛山南海）—— 同样是城市
+ *   3. 后面接路名特征（中山一路、东莞庄路）—— 是路名，不是城市
+ *   4. 剩下的裸城市词只认**串首**（「广州桥南」「深圳南山」这类省略写法都在开头），
+ *      出现在地址中段的裸城市词（「天河区广州大道中」）一律不当城市
+ *
+ * @param at 城市词在去空白文本里的起始下标
+ */
+function isCityWordAt(text: string, city: string, at: number): boolean {
+  const rest = text.slice(at + city.length);
+  if (rest.startsWith('市')) return true;
+  if (DISTRICTS.some((d) => rest.startsWith(d))) return true;
+  if (ROAD_SUFFIX.test(rest)) return false;
+  return at === 0;
+}
+
+/**
  * 推断地址所属城市。
  *
- * 判序固定「先显式后隐含」：地址里写了城市就以它为准（多个城市并存取最先出现的，
- * 因为拼接串往往把真正那一单写在前面）；没写城市才看区名；都没有才用兜底。
+ * 【判序为什么改成「谁先出现谁说话」】城市词优先的老判序有个致命漏洞：
+ * 城市名会被路名吃掉一个前缀。「越秀区中山一路梅花村」里「越秀」明明写在最前面、
+ * 是更强的地理约束，却因为「中山」属于城市词表而被判成广东省中山市。
+ * 现在城市词与区名一起按**出现位置**竞争，靠前的那一个说了算 —— 与
+ * `firstDistrict()`（「番禺区大石街道…和樾府」取番禺不取越秀）是同一套口径。
+ *
+ * 同时城市词本身要先过 `isCityWordAt`：带「市」、后面跟区名、或在串首才算数，
+ * 否则「中山一路」「东莞庄路」这类路名会把整单搬到另一个城市去。
  *
  * @param fallback 兜底城市（`AMAP_CITY`，默认广州）。fallback 出来的结果会被 `isDowngradedMatch` 判得更严。
  */
 export function inferCity(address: string, fallback = '广州'): CityHint {
   const text = address.replace(/\s+/g, '');
 
-  let explicit: { city: string; at: number } | null = null;
+  // 候选只有一个：所有「城市词 / 区名」按其出现位置竞争，位置最小者胜出
+  let best: { city: string; at: number; source: CitySource } | null = null;
+
   for (const city of CITIES) {
     const at = text.indexOf(city);
-    if (at >= 0 && (!explicit || at < explicit.at)) explicit = { city, at };
+    if (at < 0) continue;
+    if (!isCityWordAt(text, city, at)) continue;
+    // 多个城市并存取最先出现的：拼接串往往把真正那一单写在前面
+    if (!best || at < best.at) best = { city, at, source: 'explicit' };
   }
-  if (explicit) return { city: explicit.city, source: 'explicit' };
 
-  if (FOSHAN_DISTRICTS.some((d) => text.includes(d))) return { city: '佛山', source: 'district' };
-  if (GUANGZHOU_DISTRICTS.some((d) => text.includes(d))) return { city: '广州', source: 'district' };
+  for (const district of DISTRICTS) {
+    const at = text.indexOf(district);
+    if (at < 0) continue;
+    // 城市词已经更靠前 → 区名不参与（「广州市番禺区」以广州为准）
+    if (best && at >= best.at) continue;
+    best = { city: FOSHAN_DISTRICTS.includes(district) ? '佛山' : '广州', at, source: 'district' };
+  }
 
-  return { city: fallback, source: 'fallback' };
+  return best ? { city: best.city, source: best.source } : { city: fallback, source: 'fallback' };
 }
 
 /** 高德返回的城市名带「市」字（广州市/佛山市），缓存键和对账都统一去掉 */

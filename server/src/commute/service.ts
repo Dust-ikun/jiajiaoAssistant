@@ -264,6 +264,11 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
     // 线上授课没有通勤可言：不占配额、不算「还没算」，也不该出现在通勤排序里
     if (order.mode === '线上') return false;
     if (order.commuteStatus === 'failed') {
+      // 【为什么口径对不上就无视冷却】失败结论也带版本号，记的是「哪个口径下失败的」。
+      // 口径升级往往正是因为旧口径会算错（v2 把「越秀区中山一路梅花村」判成中山市，永远定位不到）。
+      // 这时还压 6 小时冷却，用户会以为「明明升级了，这条还是同样的错」，只能干等到明天。
+      // 旧口径的失败当即作废重试；新口径下真失败的照旧冷却，不会空转。
+      if (order.commuteEngine !== COMMUTE_ENGINE_VERSION) return true;
       const checked = order.commuteCheckedAt ? new Date(order.commuteCheckedAt).getTime() : 0;
       if (checked && now().getTime() - checked < FAILED_COOLDOWN_MS) return false;
       return true;

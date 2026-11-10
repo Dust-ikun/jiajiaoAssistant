@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node --env-file-if-exists=../.env --watch src/index.ts",
     "start": "node --env-file-if-exists=../.env src/index.ts",
-    "test": "node src/parser/parse.test.ts && node src/match/match.test.ts && node --no-warnings src/db.test.ts && node --no-warnings src/db.migrate.test.ts && node --no-warnings src/commute/commute.test.ts && node --no-warnings src/api.test.ts"
+    "test": "node src/parser/parse.test.ts && node src/match/match.test.ts && node --no-warnings src/db.test.ts && node --no-warnings src/db.migrate.test.ts && node --no-warnings src/commute/city.test.ts && node --no-warnings src/commute/commute.test.ts && node --no-warnings src/api.test.ts"
   },
   "dependencies": {
     "cors": "^2.8.5",

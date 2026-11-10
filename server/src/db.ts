@@ -872,6 +872,10 @@ export function countCommuteReady(engine: string): number {
  *
  * 条件与 service 里的 needsWork 一一对应，但**失败的冷却直接下沉到 SQL**：
  * 否则一屏 30 条候选全是刚失败、还在 6 小时冷却中的单子，就会挤掉真正还没算的单。
+ *
+ * 冷却只认**当前口径**下的失败：`commute_engine` 对不上的失败是旧口径留下的，
+ * 而口径升级往往正是因为旧口径会算错/定位不到（v2 把「越秀区中山一路梅花村」判成中山市）。
+ * 那时还压着 6 小时冷却，等于让用户盯着一句已知错误的提示干等。
  */
 export interface CommuteCandidate {
   id: number;
@@ -912,11 +916,16 @@ export function listCommuteCandidates(input: {
             OR commute_origin_id IS NOT ?
             OR COALESCE(commute_engine, '') <> ?
           )
-          AND NOT (commute_status = 'failed' AND commute_checked_at IS NOT NULL AND commute_checked_at >= ?)
+          AND NOT (
+            commute_status = 'failed'
+            AND COALESCE(commute_engine, '') = ?
+            AND commute_checked_at IS NOT NULL
+            AND commute_checked_at >= ?
+          )
         ORDER BY id ASC
         LIMIT ?`,
     )
-    .all(input.originId, input.engine, input.failedBefore, limit) as unknown as CommuteCandidate[];
+    .all(input.originId, input.engine, input.engine, input.failedBefore, limit) as unknown as CommuteCandidate[];
 }
 
 /** 一条「通勤有问题的单」：算不出（failed）或者还没轮到（pending） */

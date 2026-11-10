@@ -536,6 +536,16 @@ try {
     check('重算后版本补回来', db.getOrder(row.id)!.commuteEngine, COMMUTE_ENGINE_VERSION);
     check('列表里还是那条结论（地址没变，值本来就对）', db.getOrder(row.id)!.commuteMinutes, 35);
     check('算完才回到通勤排序里', db.listOrders({ sort: 'commute' }).some((o) => o.id === row.id), true);
+
+    // 口径升级常常就是为了修「这条一直算不出来」（v3 修的就是「越秀区中山一路梅花村」被判成中山市）。
+    // 旧口径留下的失败不该继续压着 6 小时冷却，否则用户升级完看到的还是同一句错话。
+    const failedRow = db.getOrder(db.listOrders({ q: '2026110601' })[0]!.id)!;
+    check('前置：它是失败单', failedRow.commuteStatus, 'failed');
+    db.getDb().prepare('UPDATE orders SET commute_engine = ? WHERE id = ?').run('geocode-city-v2', failedRow.id);
+    check('旧口径的失败单立刻回到待算集合（不等冷却）', service.enqueuePending(30).candidates >= 1, true);
+    await service.queue.drain();
+    check('重算仍失败，但带上新口径版本号', db.getOrder(failedRow.id)!.commuteEngine, COMMUTE_ENGINE_VERSION);
+    check('新口径下真失败：重新进冷却，不会每刷一次就空转', service.enqueuePending(30).candidates, 0);
   }
 } finally {
   try {
