@@ -55,6 +55,14 @@ jobs:
             exit 1
           fi
 
+      - name: 回归测试
+        # 【为什么这里还要跑一遍】ci.yml 只挂在 PR 和 push to main，tag 推送不经过它。
+        # 于是「这个提交到底测过没有」发布流水线自己是不知道的：本地改完直接打 tag、
+        # 或者 main 的 ci 还没绿就打了 tag，都会把红版本打成正式安装包——
+        # 而那种错误最难发现（包能装能开，只是某个功能是坏的）。
+        # 50 秒换掉这个风险很划算。
+        run: npm test
+
       - name: 打包（web 构建 + 服务端 esbuild + electron-builder）
         # 一条链：npm run build → web/dist；desktop build → tsc + server.mjs；
         # electron-builder → nsis 安装包 + portable 单文件，落在 desktop/release/
