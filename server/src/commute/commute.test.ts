@@ -547,6 +547,70 @@ try {
     check('重算仍失败，但带上新口径版本号', db.getOrder(failedRow.id)!.commuteEngine, COMMUTE_ENGINE_VERSION);
     check('新口径下真失败：重新进冷却，不会每刷一次就空转', service.enqueuePending(30).candidates, 0);
   }
+
+  /* ---------------------------------------------------------------- *
+   * 八、放弃的单：人工核对完就是人的判断，不该继续花配额、继续提醒
+   * ---------------------------------------------------------------- */
+  console.log('\n[17] 放弃的单：不再排队、不再计数、不再提醒');
+  {
+    const pendingBefore = db.countCommutePending(COMMUTE_ENGINE_VERSION);
+    const failedBefore = db.countCommuteFailed();
+
+    db.importMessage({
+      text: `家教编号: 2026110621
+学员地址: 某某花园
+辅导科目: 英语
+时间安排: 每周1次
+教员要求: 男女不限
+老师薪水: 130元/h`,
+      sentAt: '2026-11-05T17:00:00',
+    });
+    const row = db.listOrders({ q: '2026110621' })[0]!;
+    check('前置：这单还没算通勤', row.commuteStatus, null);
+
+    // 先让它照常失败一次，才测得出「放弃」把失败的痕迹也一起移出提醒
+    check('前置：待算集合里有它', service.enqueuePending(30).candidates >= 1, true);
+    await service.queue.drain();
+    const failedRow = db.getOrder(row.id)!;
+    check('前置：定位不到 → failed', failedRow.commuteStatus, 'failed');
+    check('前置：「还有 N 单没算出通勤」多了 1', db.countCommutePending(COMMUTE_ENGINE_VERSION), pendingBefore + 1);
+    check('前置：「通勤算不出」按钮数字多了 1', db.countCommuteFailed(), failedBefore + 1);
+    check(
+      '前置：设置面板清单里有它',
+      db.listCommuteIssues(COMMUTE_ENGINE_VERSION).some((i) => i.id === row.id),
+      true,
+    );
+    check('前置：通勤算不出那一栏里也有它', db.listOrders({ commuteFailed: true }).some((o) => o.id === row.id), true);
+
+    // 用户看完原文、发现地址确实修不出来，点「放弃」
+    db.updateOrder(row.id, { status: 'discarded' });
+
+    check('状态条的数字降回去了（这正是用户会盯着看的那个数）', db.countCommutePending(COMMUTE_ENGINE_VERSION), pendingBefore);
+    check('筛选栏「通勤算不出」的数字也降了（口径必须和 countCommuteFailed 一字不差）', db.countCommuteFailed(), failedBefore);
+    check(
+      '设置面板清单里不再出现（天天提醒一件已知的事只会让人麻木）',
+      db.listCommuteIssues(COMMUTE_ENGINE_VERSION).some((i) => i.id === row.id),
+      false,
+    );
+    check('通勤算不出那一栏里也不再出现', db.listOrders({ commuteFailed: true }).some((o) => o.id === row.id), false);
+    check(
+      '但用户主动切到「放弃」页签时仍然看得见（那是回看，不是提醒）',
+      db.listOrders({ commuteFailed: true, statuses: ['discarded'] }).some((o) => o.id === row.id),
+      true,
+    );
+
+    // 入队是几秒前发生的：队列里可能还压着它，放弃之后不许再问一次高德
+    const geoBefore = provider.geoCalls.length;
+    const transitBefore = provider.transitCalls;
+    service.queue.enqueue([row.id]);
+    await service.queue.drain();
+    check('已在队列里的放弃单不再花配额', [provider.geoCalls.length, provider.transitCalls], [geoBefore, transitBefore]);
+    check('也不给它记一条新的失败（放弃不是失败，别污染原因清单）', db.getOrder(row.id)!.commuteError, failedRow.commuteError);
+
+    // 反悔成本必须很低：改回「新单」，提醒立刻回来
+    db.updateOrder(row.id, { status: 'new' });
+    check('改回新单 → 又出现在清单里', db.countCommuteFailed(), failedBefore + 1);
+  }
 } finally {
   try {
     rmSync(dir, { recursive: true, force: true });

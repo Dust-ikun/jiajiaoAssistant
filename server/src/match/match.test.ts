@@ -77,6 +77,23 @@ console.log('\n[1] 要求解析');
 
   const t32 = parseRequirements('女老师，初中物理经验丰富，有方法，能长期稳定带课');
   check('「女老师」+「经验丰富」都是硬', [t32.gender?.hard, t32.needsExperience?.hard], [true, true]);
+
+  /**
+   * 裸性别字（2026-11-11 现场漏判）：
+   * `【要求】：女，有高中辅导家教经验…` 切句后第一个分句只有一个「女」，
+   * 原先带后缀的正则一条都不中，gender 落 null，整单被判成「可接」。
+   */
+  const bare = parseRequirements('女，有高中辅导家教经验，有责任心，理科好的，细心耐心，985/211本科生');
+  check('单写一个「女」也是硬性别要求', [bare.gender?.value, bare.gender?.hard], ['女', true]);
+  check('裸字的同一句不再被读成别的维度', [bare.majors, bare.certificates], [null, null]);
+  check('「要求女，…」同样认', parseRequirements('要求女，有耐心').gender?.value, '女');
+  check('「男，有耐心」认男', parseRequirements('男，有耐心').gender?.value, '男');
+  check('「女 优先」只降软条件', parseRequirements('女 优先，有经验').gender?.hard, false);
+
+  // 负例：带「女」字但不是性别要求的句子，绝不能判成性别门槛
+  check('「带过女孩」不是性别要求', parseRequirements('带过女孩，有耐心').gender, null);
+  check('「有女儿」不是性别要求', parseRequirements('有女儿，做事细心').gender, null);
+  check('「男/女老师均可」仍是「不限」', parseRequirements('男/女老师均可，经验丰富').gender?.value, '不限');
 }
 
 /* ---------------------------------------------------------------- *
@@ -116,6 +133,14 @@ const CASES: { name: string; req: string | null; verdict: Verdict; reason?: stri
     name: 'T4.3 982 + 理科专业（理科正好对上）',
     req: '一本/982/211大学生，理科专业优先，数学家教经验丰富，有方法有能力',
     verdict: '可接',
+  },
+  {
+    // 2026-11-11 现场漏判的那张单（#ZXGZ20261109.1 天河·伍仙桥 高中物理）：
+    // 要求首字段只写一个「女」，原先整条性别维度被跳过，判成「可接」。
+    name: 'ZXGZ 裸字「女」+ 985/211 本科（学校层次和学位都够，只有性别不符）',
+    req: '女，有高中辅导家教经验，有责任心，理科好的，细心耐心，985/211本科生',
+    verdict: '不可接',
+    reason: '性别',
   },
   { name: 'T5.1 有经验女大学生', req: '有经验女大学生 DSE课程 一对二', verdict: '不可接', reason: '性别' },
   { name: 'T5.2 专职老师', req: '专职老师', verdict: '不可接', reason: '身份' },

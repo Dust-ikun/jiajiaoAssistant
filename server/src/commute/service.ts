@@ -205,6 +205,10 @@ export function createCommuteService(options: CommuteServiceOptions = {}): Commu
     const order = getOrder(orderId);
     if (!order) throw new CommuteError(`单子 ${orderId} 不存在`);
 
+    // 入队是在几秒到几分钟之前发生的，用户完全可能在这中间点了「放弃」。
+    // 那时再向高德问一次地址＝为一个已经决定不接的单子烧配额，所以这里直接跳过（不算失败，不留痕）。
+    if (order.status === 'discarded') return;
+
     if (!order.address) {
       updateOrderCommute(orderId, { status: 'failed', error: '没有地址，无法计算通勤' });
       return;

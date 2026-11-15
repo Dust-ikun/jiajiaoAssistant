@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { fetchCommuteDetail } from '../api';
 import type { Order, OrderCommuteDetail, OrderStatus } from '../types';
 import { STATUS_LABEL, UNIT_LABEL } from '../types';
@@ -60,6 +60,8 @@ export function OrderCard({ order, expanded, onToggle, onPatch, onDelete }: Prop
   const [copied, setCopied] = useState(false);
   const [detail, setDetail] = useState<OrderCommuteDetail | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
+  /** 整张卡片：展开时据它在屏幕上的位置补回滚动量（见下面的 useLayoutEffect） */
+  const articleRef = useRef<HTMLElement | null>(null);
   const o = order;
 
   /**
@@ -82,6 +84,31 @@ export function OrderCard({ order, expanded, onToggle, onPatch, onDelete }: Prop
     };
   }, [expanded, o.id, o.commuteCheckedAt]);
 
+  /**
+   * 【为什么展开要「按住」卡片位置】同一时间只展开一张：点第二张时第一张会收起，
+   * 若它在这张上面，上方内容一下子矮了几百像素，被点的那张就被顶到屏幕上方去，
+   * 眼睛刚盯上的内容跑了。所以点击时记下它在屏幕上的 y，展开/收起落定后把滚动位置补回去，
+   * 效果就是「从原地向下拉开」，而不是整页往上跳。
+   * 用 useLayoutEffect 而不是 useEffect：必须在浏览器绘制之前补，否则用户会看到跳一下再跳回来。
+   */
+  const topBeforeToggle = useRef<number | null>(null);
+
+  useLayoutEffect(() => {
+    const before = topBeforeToggle.current;
+    topBeforeToggle.current = null;
+    const node = articleRef.current;
+    if (before === null || !node) return;
+    const delta = node.getBoundingClientRect().top - before;
+    if (Math.abs(delta) < 1) return;
+    const scroller = findScroller(node);
+    if (scroller) scroller.scrollTop += delta;
+  }, [expanded]);
+
+  const handleToggle = () => {
+    topBeforeToggle.current = articleRef.current?.getBoundingClientRect().top ?? null;
+    onToggle();
+  };
+
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(o.rawText);
@@ -101,6 +128,7 @@ export function OrderCard({ order, expanded, onToggle, onPatch, onDelete }: Prop
 
   return (
     <article
+      ref={articleRef}
       className={cn(
         'relative overflow-hidden rounded-xl border bg-white transition-shadow',
         expanded ? 'border-slate-300 shadow-sm' : 'border-slate-200 hover:border-slate-300 hover:shadow-sm',
@@ -109,7 +137,7 @@ export function OrderCard({ order, expanded, onToggle, onPatch, onDelete }: Prop
     >
       <div className={cn('absolute left-0 top-0 h-full w-[3px]', BAR[o.status])} />
 
-      <div className="flex cursor-pointer items-start gap-4 py-3 pl-4 pr-3" onClick={onToggle}>
+      <div className="flex cursor-pointer items-start gap-4 py-3 pl-4 pr-3" onClick={handleToggle}>
         {/* 时薪区：换算后的可比数字，默认排序之外都靠它 */}
         <div className="w-[76px] shrink-0 pt-0.5">
           <div
@@ -317,4 +345,20 @@ export function OrderCard({ order, expanded, onToggle, onPatch, onDelete }: Prop
       )}
     </article>
   );
+}
+
+/**
+ * 卡片最近的可滚动祖先。
+ * 【为什么不从外面传容器引用进来】卡片不该知道外面套的是 <main> 还是某个 div ——
+ * 一换布局就静默失效，而且这种失效没人会报 bug（只是「点一下会跳」）。
+ * 往上逐层找第一个「overflow-y 可滚且真的溢出了」的元素最稳。
+ */
+function findScroller(from: HTMLElement): HTMLElement | null {
+  let el = from.parentElement;
+  while (el) {
+    const style = getComputedStyle(el);
+    if (/(auto|scroll)/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1) return el;
+    el = el.parentElement;
+  }
+  return null;
 }

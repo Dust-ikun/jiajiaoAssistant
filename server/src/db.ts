@@ -695,6 +695,9 @@ export function listOrders(q: OrderQuery) {
     // 独立一栏：只列算不出的。此时不再叠加下面那条「必须是 ok」，
     // 否则两个条件互斥，用户点进去永远看到空列表。
     where.push("commute_status = 'failed'");
+    // 与 countCommuteFailed 保持一致：放弃的单不再算「问题单」（见 NOT_DISCARDED）。
+    // 但用户主动切到「放弃」页签时放行 —— 那是明确要看它们，不是被提醒。
+    if (!q.statuses?.includes('discarded')) where.push(NOT_DISCARDED);
   } else if (q.sort === 'commute' || typeof q.maxCommuteMinutes === 'number') {
     // 口径过期的旧结论也算「没算完」：它是按旧规则算出来的数，不该参与通勤排序
     where.push("commute_status = 'ok' AND commute_minutes IS NOT NULL AND COALESCE(commute_engine, '') = ?");
@@ -888,6 +891,19 @@ export interface CommuteCandidate {
   commuteEngine: string | null;
 }
 
+/**
+ * 「用户已经说不接了」的单子不参与通勤计算。
+ *
+ * 【为什么人的判断也算进通勤口径】以前只有解析结果说了算：一单地址定位不到 → 算不出 →
+ * 挂进「还有 N 单没算出通勤」，用户核对完整单、点「放弃」，条数**一点不动**，
+ * 而且每过 6 小时冷却结束还会再拿同一个坏地址去问一次高德（白烧配额）。
+ * 放弃是用户明确表态「这单不接」，它和「我还没看」是两件事，不该共享同一套重试与提醒。
+ *
+ * 【为什么不干脆删掉】放弃很轻：原文、备注、通勤历史都还在，改回「新单」立刻回到待算集合，
+ * 而且下次算出来的数还能和这次失败的记录对照。
+ */
+const NOT_DISCARDED = "status <> 'discarded'";
+
 export function listCommuteCandidates(input: {
   originId: number;
   /** 当前口径版本：库里存的版本不一致就说明结论过期，要重算 */
@@ -909,6 +925,7 @@ export function listCommuteCandidates(input: {
          FROM orders
         WHERE address IS NOT NULL AND address <> ''
           AND COALESCE(mode, '') <> '线上'
+          AND ${NOT_DISCARDED}
           AND (
             commute_status IS NULL
             OR commute_status <> 'ok'
@@ -947,6 +964,7 @@ export interface CommuteIssue {
  * 清单把「编号 + 地址 + 原因」摊开，用户才知道该去修哪条原文。
  *
  * 线上单不算：它们不需要通勤，出现在「有问题」的清单里只是噪音。
+ * 放弃的单也不算：用户已经核对过并决定不接（见 NOT_DISCARDED），留着它只会天天提醒同一件事。
  */
 export function listCommuteIssues(engine: string, limit = 200): CommuteIssue[] {
   const rows = db
@@ -955,6 +973,7 @@ export function listCommuteIssues(engine: string, limit = 200): CommuteIssue[] {
          FROM orders
         WHERE address IS NOT NULL AND address <> ''
           AND COALESCE(mode, '') <> '线上'
+          AND ${NOT_DISCARDED}
           AND (commute_status = 'failed' OR commute_status IS NULL OR COALESCE(commute_engine, '') <> ?)
         ORDER BY (commute_status = 'failed') DESC, id ASC
         LIMIT ?`,
@@ -974,6 +993,7 @@ export function listCommuteIssues(engine: string, limit = 200): CommuteIssue[] {
 /**
  * 有地址、但还没算出通勤的单子数：后端据此告诉界面「还有 N 单在算」。
  * 线上单不算 —— 它永远不会被算，计进来只会让状态条一直挂着一句「还有 N 单没算」。
+ * 放弃的单也不算 —— 同理，而且它连排队都不该再排（见 NOT_DISCARDED）。
  */
 export function countCommutePending(engine: string): number {
   return (
@@ -982,6 +1002,7 @@ export function countCommutePending(engine: string): number {
         `SELECT COUNT(*) AS n FROM orders
          WHERE address IS NOT NULL AND address <> ''
            AND COALESCE(mode, '') <> '线上'
+           AND ${NOT_DISCARDED}
            AND (commute_status IS NULL OR commute_status = 'failed' OR COALESCE(commute_engine, '') <> ?)`,
       )
       .get(engine) as { n: number }
@@ -994,9 +1015,17 @@ export function countCommutePending(engine: string): number {
  * 【为什么口径必须和 listOrders 一字不差】按钮写 21、点进去 23 条，用户会以为筛选坏了。
  * 所以这里不加任何额外条件（不排除线上单、不要求有地址）——
  * 与 `?commute=failed` 的 WHERE 完全一致。没有地址的单也该被看见：正是要去补地址。
+ *
+ * 【唯一的例外是「放弃」】放弃的单既不再排队也不再提醒（见 NOT_DISCARDED），
+ * 若这里仍把她们算进按钮数字，用户就会看到「10 单」却只点出 7 条。
+ * 想在放弃栏里回看，用「放弃」状态页签 + 通勤算不出，那条路径由 listOrders 显式放开。
  */
 export function countCommuteFailed(): number {
-  return (db.prepare(`SELECT COUNT(*) AS n FROM orders WHERE commute_status = 'failed'`).get() as { n: number }).n;
+  return (
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM orders WHERE commute_status = 'failed' AND ${NOT_DISCARDED}`)
+      .get() as { n: number }
+  ).n;
 }
 
 /* ------------------------------------------------------------------ *

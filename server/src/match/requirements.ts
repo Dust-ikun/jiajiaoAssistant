@@ -76,10 +76,27 @@ function unionItem<T>(cur: RequirementItem<T[]> | null, next: RequirementItem<T[
   return { value, hard: cur.hard || next.hard, evidence: cur.hard ? cur.evidence : next.evidence };
 }
 
+/**
+ * 裸性别字：整个分句只有一个「女」/「男」（可带「要求 / 限」前缀或「优先」尾巴）。
+ *
+ * 【为什么必须单独一条】六模板的性别都带后缀（女老师 / 女大学生 / 女家教），
+ * 但广州线下 ZXGZ 模板的真实写法是**要求第一个字段就一个字**：
+ *   `【要求】：女，有高中辅导家教经验，有责任心，理科好的，细心耐心，985/211本科生`
+ * 按「，」切完之后第一个分句就是孤零零的「女」，上面五个带后缀的正则全部落空
+ * → gender 落 null → match.ts 里 `if (req.gender ...)` 整段跳过 → 判成「可接」。
+ * 用户是男，这张单其实注定接不了，这属于「假的可接」，是最危险的方向。
+ *
+ * 【为什么不敢写成裸 /女/】那样「带过女学生」「有个女儿」会把整单判成要女老师。
+ * 所以只在**分句开头**认，并且要求这句话本身就是一个性别标签（分句结束 / 空白之后
+ * 不再是 `/`）—— `男/女老师均可`、`女老师`、`女大学生` 都不满足，各走自己的规则。
+ */
+const BARE_GENDER_RE = /^(?:要求|限|仅限|只要|需要|需)?\s*(女|男)(?:\s+[^/／]*|优先|最好|更佳)?$/;
+
 function detectGenderReq(clause: string): '男' | '女' | null {
   if (/女老师|女家教|女大学生|女生|女性|女的/.test(clause)) return '女';
   if (/男老师|男家教|男大学生|男生|男性|男的/.test(clause)) return '男';
-  return null;
+  const bare = clause.match(BARE_GENDER_RE);
+  return bare ? (bare[1] as '男' | '女') : null;
 }
 
 /**

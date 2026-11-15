@@ -113,15 +113,25 @@ export default function App() {
 
   const patch = useCallback(
     async (id: number, p: Partial<Pick<Order, 'status' | 'starred'>>) => {
+      const wasDiscarded = orders.some((o) => o.id === id && o.status === 'discarded');
       setOrders((prev) => prev.map((o) => (o.id === id ? { ...o, ...p } : o)));
       try {
         await patchOrder(id, p);
         reloadMeta();
+        /**
+         * 「放弃 / 撤销放弃」会改变通勤口径：放弃的单不再排队、不再计入「还有 N 单没算出通勤」
+         * （见 server/src/db.ts 的 NOT_DISCARDED）。本地只改了卡片上的标签，
+         * 不重拉一次的话提示条上的数字会停在旧值 —— 用户会以为点放弃没用。
+         *
+         * 只在这两个方向重拉：`new → seen`（展开卡片时自动标记）刻意不拉，
+         * 否则「新单」页签里的条目会当场消失（见下面 toggleExpand 的说明）。
+         */
+        if (p.status === 'discarded' || (p.status !== undefined && wasDiscarded)) void load(true);
       } catch {
         setToast('更新失败');
       }
     },
-    [reloadMeta],
+    [reloadMeta, load, orders],
   );
 
   /**
@@ -151,6 +161,31 @@ export default function App() {
 
   const activeStatus = filters.statuses.length === 1 ? (filters.statuses[0] as OrderStatus) : null;
   const commute = page?.commute;
+
+  /**
+   * 当前生效的筛选条件（人话版），专给「点了通勤算不出却是空列表」时解释用。
+   *
+   * 【为什么要这么较真】按钮上明明写着「通勤算不出 10」，点进去一条都没有 ——
+   * 那 10 单是 8 条「不可接」+ 2 条「存疑」，只要可接性还筛在「可接」，就会被全部滤掉。
+   * 这不是错觉也不是坏掉，但界面上一句「当前没有通勤算不出的单子」会把人骗到底，
+   * 所以要把「被谁挡住了」原样说出来，并给一个一键放开的按钮。
+   */
+  const hidingFilters = [
+    filters.verdict ? `可接性=${filters.verdict}` : '',
+    filters.statuses.length ? `状态=${filters.statuses.map((s) => STATUS_LABEL[s]).join('/')}` : '',
+    filters.starredOnly ? '只看收藏' : '',
+    filters.minHourly ? `时薪≥${filters.minHourly}` : '',
+    filters.maxCommuteMinutes ? `通勤≤${filters.maxCommuteMinutes}分` : '',
+    filters.q ? `搜索「${filters.q}」` : '',
+    filters.districts.length ? `区域 ${filters.districts.join('/')}` : '',
+    filters.stages.length ? `学段 ${filters.stages.join('/')}` : '',
+    filters.subjects.length ? `科目 ${filters.subjects.join('/')}` : '',
+    filters.modes.length ? `形式 ${filters.modes.join('/')}` : '',
+    filters.groups.length ? `来源群 ${filters.groups.join('/')}` : '',
+  ].filter(Boolean);
+
+  /** 「通勤算不出」页签下：库里有算不出的单，但一条都没落到当前列表上 */
+  const blockedCommuteFailed = filters.commuteFailed && (page?.commuteFailed ?? 0) > 0 && orders.length === 0;
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -276,17 +311,31 @@ export default function App() {
                   </svg>
                 </div>
                 <p className="text-[13px] font-medium text-slate-600">
-                  {meta?.total ? '当前条件下没有单子' : '还没有收录任何单子'}
-                </p>
-                <p className="mx-auto mt-1 max-w-xs text-[12px] leading-relaxed text-slate-400">
                   {meta?.total
-                    ? filters.commuteFailed
-                      ? '当前没有「通勤算不出」的单子 —— 切回「全部」继续看。'
-                      : filters.sort === 'commute' || filters.maxCommuteMinutes
-                        ? '通勤还没算完的单子不会参与通勤排序/筛选 —— 等后台算完再看，或者先切回「按时薪排序」。'
-                        : '试着放宽时薪下限，或清空左侧的区域/科目筛选。'
+                    ? blockedCommuteFailed
+                      ? '不是没有单子，是被筛选挡住了'
+                      : '当前条件下没有单子'
+                    : '还没有收录任何单子'}
+                </p>
+                <p className="mx-auto mt-1 max-w-sm text-[12px] leading-relaxed text-slate-400">
+                  {meta?.total
+                    ? blockedCommuteFailed
+                      ? `有 ${page?.commuteFailed} 单算不出通勤，但它们全被这几项筛掉了：${hidingFilters.join('、') || '其他条件'}。`
+                      : filters.commuteFailed
+                        ? '当前没有「通勤算不出」的单子 —— 切回「全部」继续看。'
+                        : filters.sort === 'commute' || filters.maxCommuteMinutes
+                          ? '通勤还没算完的单子不会参与通勤排序/筛选 —— 等后台算完再看，或者先切回「按时薪排序」。'
+                          : '试着放宽时薪下限，或清空左侧的区域/科目筛选。'
                     : '两步就能用起来：先粘一批单子，再告诉程序你从哪出发。'}
                 </p>
+                {blockedCommuteFailed && (
+                  <button
+                    onClick={() => setFilters({ ...DEFAULT_FILTERS, commuteFailed: true })}
+                    className="btn-primary mt-3"
+                  >
+                    只看这 {page?.commuteFailed} 单
+                  </button>
+                )}
                 {!meta?.total && (
                   <FirstRun
                     onImport={() => setImportOpen(true)}
@@ -461,6 +510,27 @@ function CommuteNotice({
   page: OrdersResponse | null;
   onOpenSettings: (tab: SettingsTab) => void;
 }) {
+  /**
+   * 「还有 N 单没算出通勤」这一句是按**事实**判定的，关不掉就会一直挂着 ——
+   * 那几条地址废掉的单子一整天都在，用户每看一眼都以为自己漏了什么。
+   * 所以允许手动关掉，但记住「当时是多大的数字」：待算条数比它更多时才重新冒出来，
+   * 于是真正的坏消息不会被静音，而已知的那几条不会反复吵。
+   */
+  const [dismissed, setDismissed] = useState(readDismissedPending);
+  const pending = page?.commute.pending ?? 0;
+
+  /**
+   * 【为什么 pending 变小时也要写回】用户「放弃」掉几单之后，待算条数会真的降下来
+   * （见 server/src/db.ts 的 NOT_DISCARDED）。若基线还停在被关掉时的 10，
+   * 那几单放弃掉之后要涨到 11 才会再提醒 —— 中间新冒出来的那单就被漏掉了。
+   */
+  useEffect(() => {
+    if (pending < dismissed) {
+      setDismissed(pending);
+      writeDismissedPending(pending);
+    }
+  }, [pending, dismissed]);
+
   if (!page) return null;
   const c = page.commute;
   const queued = page.commuteEnqueued > 0 || c.busy || c.queued > 0;
@@ -468,6 +538,8 @@ function CommuteNotice({
   let text: string | null = null;
   let tone: 'warn' | 'info' | 'muted' = 'info';
   let action: { label: string; tab: SettingsTab } | null = null;
+  /** 只有「已知待算」这一种是可关的：没 key／没起点／配额用完都必须一直喊 */
+  let dismissible = false;
 
   if (c.blockedBy === 'no_key') {
     text = '通勤未配置：没读到 AMAP_KEY，其余功能正常（在 .env 里填上即可）';
@@ -486,10 +558,11 @@ function CommuteNotice({
   } else if (queued) {
     text = `正在算通勤${c.queued > 0 ? `（排队 ${c.queued} 单）` : ''}…`;
     tone = 'info';
-  } else if (c.pending > 0) {
+  } else if (c.pending > 0 && c.pending > dismissed) {
     text = `还有 ${c.pending} 单没算出通勤；它们不参与通勤排序与通勤上限筛选`;
     tone = 'muted';
     action = { label: '看通勤状态', tab: 'commute' };
+    dismissible = true;
   }
 
   if (!text) return null;
@@ -517,6 +590,37 @@ function CommuteNotice({
       <span className="tabular-nums text-[10.5px] opacity-70">
         已算 {c.ready} 单 · 配额 {c.quota.used}/{c.quota.limit}
       </span>
+      {dismissible && (
+        <button
+          onClick={() => {
+            setDismissed(c.pending);
+            writeDismissedPending(c.pending);
+          }}
+          title="关掉这条提示（明细还在「设置 → 通勤状态」里；待算条数再变多会重新出现）"
+          className="grid h-4 w-4 shrink-0 place-items-center rounded leading-none text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+        >
+          ×
+        </button>
+      )}
     </div>
   );
+}
+
+const COMMUTE_NOTICE_DISMISS_KEY = 'jiajiao.commuteNotice.dismissedPending';
+
+/** 上次按掉提示时的待算条数。读不到（隐私模式／旧浏览器）就当作没按过 */
+function readDismissedPending(): number {
+  try {
+    return Number(window.localStorage.getItem(COMMUTE_NOTICE_DISMISS_KEY) ?? '0') || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeDismissedPending(n: number) {
+  try {
+    window.localStorage.setItem(COMMUTE_NOTICE_DISMISS_KEY, String(n));
+  } catch {
+    // 存不下就只在本次会话里生效：一句提示的开关不值得打断用户
+  }
 }
