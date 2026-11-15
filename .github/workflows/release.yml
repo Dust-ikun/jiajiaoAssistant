@@ -1,0 +1,85 @@
+name: release
+
+# 【为什么只有 tag 和手动触发】
+# 打包是一次「产出可下载文件」的动作，不该跟着每次 push 跑：慢、费额度、
+# 而且大部分 push 根本不需要安装包。手动触发（workflow_dispatch）是给你
+# 空跑验证用的：只构建 + 传 artifact，不发 Release，先证明云端打得出来。
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+# 【为什么在 job 里而不是全局给写权限】建 Release 需要写，
+# 但 checkout / 安装 / 构建这些步骤并不需要。写在 job 上能少一层暴露面。
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: 打包 Windows 安装包
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: 安装依赖（严格按 lock）
+        # 不要在这一步设 ELECTRON_MIRROR：那是国内网络绕 GitHub 用的，
+        # runner 在海外，设了反而绕远路甚至失败
+        run: npm ci
+
+      - name: 校验 tag 与版本号一致
+        # 【这是打歪包的唯一根源】electron-builder 的 artifactName 是
+        # jiajiao-setup-${version}.${ext}，version 取自 desktop/package.json，
+        # 与 git tag 无关。打了 v0.1.5 却忘了改版本号，产出的文件仍叫
+        # jiajiao-setup-0.1.4.exe —— 名字对了内容错了，事后无从分辨。
+        # 所以宁可在这里红，也不要在 Release 页面里制造同名文件。
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER=$(node -p "require('./desktop/package.json').version")
+          echo "tag=$TAG  desktop/package.json=$VER"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::tag 与 desktop/package.json 版本不一致（根 package.json 也要一起改）"
+            exit 1
+          fi
+
+      - name: 打包（web 构建 + 服务端 esbuild + electron-builder）
+        # 一条链：npm run build → web/dist；desktop build → tsc + server.mjs；
+        # electron-builder → nsis 安装包 + portable 单文件，落在 desktop/release/
+        # 【为什么不给 GH_TOKEN】electron-builder 检测到 token 时会自己尝试发布，
+        # 与下面的 softprops 抢活。token 只交给真正需要它的那一步。
+        run: npm run package
+
+      - name: 留存构建产物
+        # 手动触发时没有 Release，这里就是你拿包的地方；
+        # 保留期短一点，Actions 存储是按天计费的
+        uses: actions/upload-artifact@v4
+        with:
+          name: jiajiao-win-${{ github.ref_name }}
+          path: desktop/release/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: 发布 Release
+        # 只在 tag 推送时走；fail_on_unmatched_files 是为了堵住
+        # 「打包静默失败但 Release 照建」——空壳 Release 比报错更难发现
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: desktop/release/*.exe
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
