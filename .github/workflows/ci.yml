@@ -32,10 +32,10 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 Node 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           # 必须固定：代码依赖 Node 原生剥 TS 类型（直接 node 跑 .ts）
           # 和内置的 node:sqlite，runner 预装版本会随镜像漂移

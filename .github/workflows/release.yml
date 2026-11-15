@@ -25,10 +25,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: 检出代码
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: 安装 Node 24
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
@@ -65,7 +65,7 @@ jobs:
       - name: 留存构建产物
         # 手动触发时没有 Release，这里就是你拿包的地方；
         # 保留期短一点，Actions 存储是按天计费的
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: jiajiao-win-${{ github.ref_name }}
           path: desktop/release/*.exe
@@ -76,7 +76,7 @@ jobs:
         # 只在 tag 推送时走；fail_on_unmatched_files 是为了堵住
         # 「打包静默失败但 Release 照建」——空壳 Release 比报错更难发现
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: desktop/release/*.exe
           fail_on_unmatched_files: true
