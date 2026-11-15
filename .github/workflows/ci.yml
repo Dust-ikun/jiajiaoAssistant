@@ -1,0 +1,61 @@
+name: ci
+
+# 【为什么两个触发都要】只有一个的话，另一半永远是盲区：
+#   - pull_request：PR 页面上的勾叉才有意义（合之前验）
+#   - push to main：单人开发常常直接推 main，没有 PR 可挂
+# branches 过滤器别省：不写的话连 tag 推送也会触发这里，将来 release.yml 会互相干扰
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 【为什么显式收窄】GitHub 的默认权限是宽的。这个 job 只读代码，
+# 不需要写 issue / 写 release，最小权限是以后接入任何自动评论时的安全基线
+permissions:
+  contents: read
+
+# 【为什么取消旧的】同一分支连推三次，只留最后一次；
+# 省额度，也省你盯着三次运行一起排队的时间
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: 测试与构建
+    # 【为什么是 windows 而不是更便宜的 ubuntu】desktop workspace 的 devDependencies
+    # 里有 electron 45.2.3，Linux 上 npm ci 会白下 100MB+ 的 Linux 版二进制；
+    # 而且最终产物是 Windows 安装包，验证环境与发布环境一致能少一类差异。
+    # 代价：私有库 Windows 分钟数按 2 倍计，但这个 job 只跑 2-4 分钟。
+    runs-on: windows-latest
+    # 想清楚超时，别指望默认的 360 分钟在真的卡住时救你
+    timeout-minutes: 15
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node 24
+        uses: actions/setup-node@v4
+        with:
+          # 必须固定：代码依赖 Node 原生剥 TS 类型（直接 node 跑 .ts）
+          # 和内置的 node:sqlite，runner 预装版本会随镜像漂移
+          node-version: '24'
+          # 缓存的是 npm 的下载缓存，不是 node_modules；lock 一变自动失效
+          cache: npm
+
+      - name: 安装依赖（严格按 lock）
+        # 【为什么不是 npm install】install 会在环境里悄悄改写 package-lock.json，
+        # 而 runner 上的改动随虚拟机销毁——你永远不知道它替你「解决」了什么冲突。
+        # ci 要求 lock 与 package.json 完全一致，不一致就报 EUSAGE 停下
+        run: npm ci
+
+      - name: 回归测试
+        # 七个测试文件：解析六模板 / 判定 / 库 / 迁移 / 城市推断 / 通勤 / HTTP。
+        # 全程假 provider + 临时 JIAJIAO_DATA 目录，零网络、零真实高德配额，
+        # 所以这里一个 secret 都不用配
+        run: npm test
+
+      - name: 前端构建
+        # 证明 vite 能出产物；顺序放在测试之后，是因为测试更快也更容易红，
+        # 失败时你打开的第一个日志页就该是最可能出问题的那个
+        run: npm -w web run build
