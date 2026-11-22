@@ -76,7 +76,12 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: jiajiao-win-${{ github.ref_name }}
-          path: desktop/release/*.exe
+          # latest.yml 是给 electron-updater 的「最新版本说明」，blockmap 是差分下载用的
+          # —— 少了它们，客户端能装但**不会自己发现新版**（v0.1.5 起自带自动更新）
+          path: |
+            desktop/release/*.exe
+            desktop/release/latest.yml
+            desktop/release/*.blockmap
           if-no-files-found: error
           retention-days: 7
 
@@ -86,7 +91,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v3
         with:
-          files: desktop/release/*.exe
+          # 【为什么 latest.yml 必须一起发】客户端只认这个文件里的版本号和下载地址，
+          # 只挂 exe 的话，装了 0.1.5 的人永远等不到 0.1.6。
+          files: |
+            desktop/release/*.exe
+            desktop/release/latest.yml
+            desktop/release/*.blockmap
           fail_on_unmatched_files: true
           generate_release_notes: true
         env:

@@ -37,6 +37,14 @@
 
 下载 `jiajiao-portable-*.exe`，放在任意目录双击即可，不写注册表。
 
+### 升级到新版本
+
+从 **v0.1.5** 起，安装版会自己检查更新：启动约 15 秒后在后台查 GitHub Releases，有新版本就静默下载，下完弹一次「立即重启安装」。数据在 `%APPDATA%\jiajiao`，升级不会动它。
+
+- v0.1.4 及更早**没有这段代码**，要先手动装一次 0.1.5，之后才能自动更新；
+- 国内连 GitHub 慢或断网时检查会静默失败（不会打扰使用），直接到 [Releases](../../releases) 下 `jiajiao-setup-*.exe` 覆盖安装即可；
+- 免安装版（portable）不参与自动更新，换新版就是重新下一个 exe。
+
 ### 首次使用三步
 
 1. **设置 → 出发点**：填你从哪出发（必须有，通勤不会猜你的起点）
@@ -100,6 +108,8 @@ npm run package
 ```
 
 产物在 `desktop/release/`：`jiajiao-setup-<version>.exe`（安装版）与 `jiajiao-portable-<version>.exe`（免安装）。
+
+`latest.yml` 与 `*.blockmap` **必须跟 exe 一起发到 Release**：前者是客户端判断「有没有新版」的唯一依据（只挂 exe 的话，装了新版的人永远等不到下一次更新），后者是差分下载用的。`.github/workflows/release.yml` 已经替你做了这件事 —— 推一个 `v*` tag 即可。
 
 ## 开发
 

@@ -1,6 +1,6 @@
 {
   "name": "desktop",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "type": "module",
   "main": "dist/main.js",
@@ -11,7 +11,7 @@
     "start": "npm run build && electron .",
     "dev": "npm run build && electron . --dev",
     "pack": "npm run build && electron-builder --win --dir",
-    "dist": "npm run build && electron-builder --win"
+    "dist": "npm run build && electron-builder --win --publish never"
   },
   "devDependencies": {
     "electron": "45.2.3",
@@ -28,7 +28,15 @@
     },
     "files": [
       "dist/main.js",
-      "package.json"
+      "package.json",
+      "node_modules/{electron-updater,builder-util-runtime,fs-extra,graceful-fs,jsonfile,universalify,js-yaml,argparse,lazy-val,lodash.escaperegexp,lodash.isequal,semver,tiny-typed-emitter,debug,ms,sax}/**"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Dust-ikun",
+        "repo": "jiajiaoAssistant"
+      }
     ],
     "extraResources": [
       {
@@ -67,5 +75,8 @@
     "portable": {
       "artifactName": "jiajiao-portable-${version}.${ext}"
     }
+  },
+  "dependencies": {
+    "electron-updater": "^6.8.11"
   }
 }

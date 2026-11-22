@@ -10,6 +10,12 @@
  * 能跑就用自带运行时，跑不了退回系统 node；两个都不行就把真实报错摆给用户看，而不是转圈。
  */
 import { app, BrowserWindow, Menu, dialog, shell } from 'electron';
+/**
+ * electron-updater 是 CJS 包。这里用 default import 再解构（而不是直接 `import { autoUpdater }`）：
+ * ESM 从 CJS 拿命名导出要靠 Node 对 `module.exports` 的静态分析，包内换一种赋值写法就会
+ * 变成「undefined is not an object」；`default` 永远是整个 exports 对象，稳。
+ */
+import electronUpdater from 'electron-updater';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -327,6 +333,82 @@ function createWindow(): BrowserWindow {
 }
 
 /* ------------------------------------------------------------------ *
+ * 自动更新
+ * ------------------------------------------------------------------ */
+
+const { autoUpdater } = electronUpdater;
+
+/**
+ * 自动更新（v0.1.5 起）。
+ *
+ * 【为什么放在壳里，而不是服务端】更新是「这个 exe 自己」的事 —— 它得知道自己装在哪、
+ * 怎么把自己换掉，这些只有 Electron 主进程做得到。服务端只管数据；而且浏览器直连 8787
+ * 的用法根本不该看到「要不要重启安装」。
+ *
+ * 【为什么检查失败一律不出声】这张表是用来看单子的。国内连 GitHub 慢、断网、代理不通
+ * 都很常见，每次启动弹一句「检查更新失败」只会让人以为软件坏了。所以全程只写控制台日志，
+ * 唯一的弹窗留给「新版本已经下好了，要不要现在装」。
+ */
+const UPDATE_FIRST_DELAY = 15_000; // 先让服务和窗口起来，别跟启动抢 IO
+const UPDATE_INTERVAL = 6 * 60 * 60 * 1000;
+
+function setupUpdater(): void {
+  /**
+   * 开发期跑的是 node_modules 里的 electron.exe：没有安装目录、没有 resources/app-update.yml，
+   * electron-updater 会直接抛「不是打包版」。这不是保险，是必须 —— 否则 `npm run dev` 一启动就炸。
+   */
+  if (dev) return;
+
+  autoUpdater.autoDownload = true;
+  /**
+   * 用户点了「稍后」，退出时顺手装上。这类工具不需要仪式感，也免得下次打开又弹一次。
+   */
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on('checking-for-update', () => console.log('[jiajiao] 检查更新…'));
+  autoUpdater.on('update-not-available', (info) => console.log(`[jiajiao] 已是最新（${info.version}）`));
+  autoUpdater.on('update-available', (info) => console.log(`[jiajiao] 发现新版本 ${info.version}，开始下载`));
+  autoUpdater.on('error', (e) => console.log(`[jiajiao] 更新失败（忽略，不影响使用）：${e?.message ?? e}`));
+
+  let lastPct = -20;
+  autoUpdater.on('download-progress', (p) => {
+    if (p.percent - lastPct < 20) return; // 每 20% 一行，别把控制台刷满
+    lastPct = p.percent;
+    console.log(`[jiajiao] 下载新版本 ${Math.round(p.percent)}%（${Math.round(p.bytesPerSecond / 1024)} KB/s）`);
+  });
+
+  autoUpdater.on('update-downloaded', async (info) => {
+    const opts = {
+      type: 'info' as const,
+      title: '更新已就绪',
+      message: `新版本 ${info.version} 已下载完成`,
+      detail: '重启后自动安装。单子、资质、通勤缓存都在 %APPDATA%\\jiajiao 下，升级不会动它们。',
+      buttons: ['立即重启安装', '稍后'],
+      defaultId: 0,
+      cancelId: 1,
+      noLink: true,
+    };
+    const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts);
+    if (response !== 0) return;
+    /**
+     * 【为什么先 stopServer】安装程序要覆盖 app 目录里的文件，本地服务进程还挂在那个 exe 上，
+     * Windows 会以「文件被占用」把安装卡住（表现出来就是装到一半停住）。
+     */
+    stopServer();
+    autoUpdater.quitAndInstall(false, true);
+  });
+
+  const check = () => {
+    // checkForUpdates 自身会把错误转成 'error' 事件，这里再兜一层，防止未处理的 reject
+    autoUpdater
+      .checkForUpdates()
+      .catch((e: unknown) => console.log(`[jiajiao] 检查更新失败（忽略）：${e instanceof Error ? e.message : String(e)}`));
+  };
+  setTimeout(check, UPDATE_FIRST_DELAY).unref?.();
+  setInterval(check, UPDATE_INTERVAL).unref?.();
+}
+
+/* ------------------------------------------------------------------ *
  * 生命周期
  * ------------------------------------------------------------------ */
 
@@ -348,6 +430,8 @@ if (!app.requestSingleInstanceLock()) {
     try {
       const port = await startServer();
       await win.loadURL(`http://127.0.0.1:${port}/`);
+      // 界面已经能用了，才轮到后台的更新检查（它自己会延后 15 秒再发第一枪）
+      setupUpdater();
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       dialog.showErrorBox('本地服务没起来', msg);
