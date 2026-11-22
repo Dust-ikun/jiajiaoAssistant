@@ -78,17 +78,86 @@ const CLOSERS = new Set(Object.values(OPEN_TO_CLOSE));
 const NAME_CHAR = /[\u4e00-\u9fa5A-Za-z]/;
 
 /**
+ * 字段名里除别名之外允许多少个字的限定词。
+ *
+ * 【为什么要有这一档】群里大量字段名不是「别名」本身，而是**别名 + 2 字限定词**：
+ *   `薪资范围：180-200元/次`   → 薪资 + 范围
+ *   `师资要求：一本及以上女大学生` → 师资 + 要求（别名在后）
+ *   `授课科目：英语`            → 授课 + 科目（别名在后）
+ * 2026-11-22 用户截图里的那一单（YF11 群 荐广州051906）七个字段里就有三个是这种写法，
+ * 结果是「未识别到薪水 + 缺少老师要求」，卡片上时薪一格写着「未识别」，
+ * 判定却还报「可接」—— 要求根本没解析出来，等于把一张「只招女老师」的单当成了谁都能接。
+ *
+ * 【为什么卡死在 2 个字】这条放宽同时会削弱 T5 的噪声闸门：
+ * `【信息费收取标准】（信息费只收一次）：` 这行通告以别名 `信息费` 开头，
+ * 若允许任意长度的限定词，它就会被当成 `infoFee` 字段，公告内容变成字段值。
+ * 它的限定词是 4 个字（收取标准），2 字上限恰好把它挡在外面；
+ * 再长的字段名该做的是**往 dict.ts 里加一条别名**，而不是在这里放宽。
+ */
+const ALIAS_FILLER_MAX = 2;
+
+/** 别名按长度从长到短：`学员地址` 必须先于 `学员` 命中 */
+const ALIAS_ENTRIES = Object.entries(FIELD_ALIASES).sort((a, b) => b[0].length - a[0].length);
+
+interface AliasHit {
+  key: FieldKey;
+  /** 别名本身的长度（紧凑写法的判定要用它） */
+  nameLen: number;
+}
+
+/**
+ * 名字段 → 字段键。
+ *
+ * 三档，从最确定往下退：
+ *   1. **整段等于别名**（`学员地址`、`薪资`、`老师报酬`）—— 最可靠，永远排第一
+ *   2. **后缀是别名**（`师资要求`→要求、`授课科目`→科目、`学生科目`→科目）
+ *   3. **前缀是别名**（`薪资范围`→薪资、`价格预算`→价格）
+ *
+ * 【为什么后缀排在前缀前面】中文复合词的头在后面：`学生科目` 说的是科目，
+ * `师资要求` 说的是要求。反过来按前缀，`学生科目` 会被 `学生` 吃成 studentInfo，
+ * 于是同一单里出现两个 studentInfo —— 切块那边（DUP_KEYS）看到「单值字段重复」
+ * 就把这一单劈成两半，界面上多出一条没有地址、没有价钱的空单。
+ * 前缀只作兜底：`薪资范围` 的 `范围` 不是别名，只能靠前缀 `薪资` 认。
+ *
+ * 【这条规则唯一的刺：`老师性别`】它和 `学生性别` 只差一个字，语义却在两个维度上：
+ * 前者是「只招女老师」，后者是「学生是女孩」。若交给后缀匹配，`性别` 会把它吃成
+ * studentGender —— 判定那边再也看不到性别门槛，一张只招女老师的单会显示「可接」
+ * （docs 里最怕的假可接）。所以 `老师/教师/教员 + 性别` 在 dict.ts 里是整段别名，
+ * 走上第 1 档。同理，钱的那一族（老师报酬 / 老师课费 / 教员薪酬…）也各有整段别名
+ * 或后缀兜底 —— 后缀一旦排在前面，`教员薪酬` 的 `薪酬` 就能正确命中 salary。
+ */
+function matchAlias(run: string): AliasHit | null {
+  for (const [alias, key] of ALIAS_ENTRIES) {
+    if (run === alias) return { key, nameLen: alias.length };
+  }
+  for (const [alias, key] of ALIAS_ENTRIES) {
+    const filler = run.length - alias.length;
+    if (filler >= 1 && filler <= ALIAS_FILLER_MAX && run.endsWith(alias)) return { key, nameLen: alias.length };
+  }
+  for (const [alias, key] of ALIAS_ENTRIES) {
+    const filler = run.length - alias.length;
+    if (filler >= 1 && filler <= ALIAS_FILLER_MAX && run.startsWith(alias)) return { key, nameLen: alias.length };
+  }
+  return null;
+}
+
+/**
  * 解析一行「字段名 + 值」。
  *
  * 【为什么不写成一条大正则】字段名可长可短（`地址` / `对老师要求`），无冒号时
  * 还要能切出值（`【地址】广州市…`）。所以先抠出开头的连续「中文字/字母」段，
- * 再从中**从长到短**找字典命中最长的那个别名 —— 这样 `学员地址` 不会被 `学员` 抢走。
+ * 再拿这段名字去词典里找键 —— 见 matchAlias。
  *
  * 三条校验（对应 docs/CONTEXT.md 8.1）：
- * 1. 左右包裹符必须配对（`【信息费收取标准】…：` 这种通告行就是靠这条被挡掉的）
- * 2. 字段名必须命中词典
+ * 1. 左右包裹符必须配对（`【信息费收取标准】…：` 这种通告行就是靠这条 + 2 字限定词上限挡掉的）
+ * 2. 字段名必须命中词典（可带 ≤2 字限定词）
  * 3. 冒号可有可无；但「无包裹且无冒号」只认值以数字/字母/符号开头的紧凑写法，
  *    否则任何一句话都能被当成字段（宁可漏，不可乱认）
+ *
+ * 【为什么结构判定要按「整段名字」而不是「别名长度」】`薪资范围：…` 里冒号在名字
+ * 之后的第 4 个字符处，若还按别名长度（2）去数，冒号就落在名字中间，
+ * 于是走「无冒号」分支、值变成 `范围：180-200元/次`，再被紧凑写法的闸门挡掉 ——
+ * 整行静默变成续行。所以先看 run 后面紧跟的是什么，再决定别名怎么切。
  */
 export function readFieldLine(raw: string): { key: FieldKey; value: string } | null {
   const line = raw.trim();
@@ -106,19 +175,7 @@ export function readFieldLine(raw: string): { key: FieldKey; value: string } | n
   const run = line.slice(i, j);
   if (!run) return null;
 
-  let key: FieldKey | undefined;
-  let nameLen = 0;
-  for (let len = Math.min(run.length, 10); len >= 1; len--) {
-    const hit = FIELD_ALIASES[run.slice(0, len)];
-    if (hit) {
-      key = hit;
-      nameLen = len;
-      break;
-    }
-  }
-  if (!key) return null;
-
-  let k = i + nameLen;
+  let k = j;
   if (opener) {
     while (line[k] === ' ') k++;
     if (line[k] !== OPEN_TO_CLOSE[opener]) return null; // 包裹符没配对 → 不是字段行
@@ -126,6 +183,9 @@ export function readFieldLine(raw: string): { key: FieldKey; value: string } | n
   } else if (line[k] !== undefined && CLOSERS.has(line[k])) {
     return null; // 有右包裹符却没有左包裹符
   }
+
+  const hit = matchAlias(run);
+  if (!hit) return null;
 
   while (line[k] === ' ' || line[k] === '\u3000') k++;
   let hadColon = false;
@@ -137,11 +197,11 @@ export function readFieldLine(raw: string): { key: FieldKey; value: string } | n
 
   const value = line.slice(k).trim();
   if (!opener && !hadColon) {
-    if (nameLen < 2) return null;
+    if (hit.nameLen < 2) return null;
     if (!/^[\dA-Za-z+\-~（(]/.test(value)) return null;
   }
 
-  return { key, value };
+  return { key: hit.key, value };
 }
 
 export function looksLikeFieldLine(line: string): boolean {

@@ -93,6 +93,10 @@ export const FIELD_ALIASES: Record<string, FieldKey> = {
   // 科目另有「扫全文」兜底（见 buildOrder 里 subjectText 为空时 detectSubjects(all)）
   年级及科目: 'grade',
   年级及学科: 'grade',
+  // `【年级性别】初三男孩` 这类写法实盘里有不少：归 grade，性别从年级文本里照样扫得到
+  // （buildOrder 会拿 gradeText 反推 studentGender）；若让它走后缀匹配，`性别` 会把它吃成
+  // studentGender，学段就丢了 —— 卡片上「小学/初中/高中」那个标签会整格消失
+  年级性别: 'grade',
   学生性别: 'studentGender', // T3
   性别: 'studentGender',
   现阶段成绩: 'currentScore', // T3（值常常是空的）
@@ -115,6 +119,12 @@ export const FIELD_ALIASES: Record<string, FieldKey> = {
   对老师要求: 'teacherReq', // T3
   教员要求: 'teacherReq', // T6
   老师要求: 'teacherReq', // T1
+  // `【老师性别】女老师` / `【老师性别】不限`：说的是**老师的**性别，不能落到
+  // studentGender 上去 —— 一落错，判定那边就看不到「只招女老师」这道门槛，
+  // 整张单会显示「可接」（2026-11-22 实盘里这两种写法都有）
+  老师性别: 'teacherReq',
+  教师性别: 'teacherReq',
+  教员性别: 'teacherReq',
   教师要求: 'teacherReq',
   教员条件: 'teacherReq',
   老师条件: 'teacherReq',
@@ -124,6 +134,18 @@ export const FIELD_ALIASES: Record<string, FieldKey> = {
   // 薪水
   老师薪水: 'salary', // T6
   老师薪资: 'salary', // T1
+  // 2026-11-22：`老师 + 报酬词` 这一族在实盘里非常多（【老师报酬】/【老师课费】/【老师课费】，
+  // 一个群里就有二十几条）。不逐条列出来的话，前缀 `老师` 会先命中 teacherReq，
+  // 一笔价钱就被读成了一条「老师要求」：卡片上时薪空白，判定却以为这张单没有要求。
+  老师报酬: 'salary',
+  老师课费: 'salary',
+  老师课时费: 'salary',
+  老师课时: 'salary',
+  老师薪酬: 'salary',
+  老师工资: 'salary',
+  老师费用: 'salary',
+  老师待遇: 'salary',
+  课费: 'salary',
   薪水: 'salary',
   薪资: 'salary', // T5
   课时费: 'salary',

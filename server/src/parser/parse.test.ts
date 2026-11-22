@@ -7,7 +7,7 @@
  * 运行：npm -w server run test（Node 24 直接执行 TS，不装依赖也能跑）
  */
 import { readFileSync } from 'node:fs';
-import { parseMessage, type ParsedOrder } from './parse.ts';
+import { looksLikeFieldLine, parseMessage, readFieldLine, type ParsedOrder } from './parse.ts';
 
 const load = (name: string) => readFileSync(new URL(`./samples/${name}.txt`, import.meta.url), 'utf8');
 
@@ -580,6 +580,70 @@ ZXGZ20261104.2  机构单618
   check('每周2-3次 → 2', parseMessage(`家教编号: 2026110809\n时间安排: 每周2-3次\n老师薪水: 100元/h`)[0]?.freqPerWeek, 2);
   check('每周二至三次 → 2', parseMessage(`家教编号: 2026110810\n时间安排: 每周二至三次\n老师薪水: 100元/h`)[0]?.freqPerWeek, 2);
   check('每周1次不受影响', parseMessage(`家教编号: 2026110811\n时间安排: 每周1次\n老师薪水: 100元/h`)[0]?.freqPerWeek, 1);
+}
+
+/* ---------------------------------------------------------------- *
+ * 字段名 = 别名 + 限定词
+ *
+ * 现场案例（2026-11-22，YF11 群 荐广州051906，用户截图）：七个字段里三个的名字
+ * 都不是词典里的别名，而是「别名带俩字」—— 薪资**范围** / **师资**要求 / **授课**科目。
+ * 老逻辑要求「别名必须一路顶到冒号」，于是这三行全被当成续行：
+ * 卡片上时薪一格写着「未识别」，底部挂「未识别到薪水」「缺少老师要求」，
+ * 而判定报的却是「可接」—— 「一本及以上女大学生」这半句根本没进判定。
+ * ---------------------------------------------------------------- */
+{
+  section('[13] 字段名带限定词：薪资范围 / 师资要求 / 授课科目');
+
+  const [o] = parseMessage(`订单编号：荐广州051906
+上课地点：越秀区建设大马路
+学生情况：三年级（一对二）
+授课科目：英语
+上课时间：周二晚上18:30-20:30，周六下午13:30-15:30，一周二次，每次1.5小时
+薪资范围：180-200元/次
+师资要求：一本及以上女大学生`);
+
+  check('编号照旧', o?.orderNo, '荐广州051906');
+  check('地址与区域', [o?.address, o?.district], ['越秀区建设大马路', '越秀区']);
+  check('「授课科目」当科目', o?.subjects, ['英语']);
+  check('「薪资范围」当薪水', o?.salaryRaw, '180-200元/次');
+  check('按次 180 + 每次1.5小时 → 时薪 120', [o?.salaryUnit, o?.salaryMin, o?.salaryMax, o?.salaryHourly], ['session', 180, 200, 120]);
+  check('「师资要求」当老师要求', o?.teacherReq, '一本及以上女大学生');
+  check('这一单不该再有警告（截图里那两条应当消失）', o?.warnings, []);
+  check('置信度回到 high', o?.confidence, 'high');
+
+  /* 头在后的复合词：`学生科目` 说的是科目，不是学生信息 */
+  const multi = parseMessage(`家教编号: 2026112201
+学生科目：初二物理
+地点：番禺区员岗附近
+薪酬：100-120 元/小时
+学生情况：后续可长期带
+要求：男女不限`);
+  check('「学生科目」归科目（归成学生信息会被切块逻辑当成重复字段、把一单劈两半）', multi[0]?.subjects, ['物理']);
+  check('这一单不会被劈成两半（碎片的表现就是：没有地址、没有价钱的空单）', multi.length, 1);
+  check('地址与价钱都留在同一单里', [multi[0]?.address, multi[0]?.salaryHourly], ['番禺区员岗附近', 100]);
+
+  /* 老师那一侧的两个维度最容易串：老师的性别 ≠ 学生的性别 */
+  check('「老师性别」是老师要求，不是学生性别', parseMessage(`家教编号: 2026112202
+学员地址: 天河岗顶
+辅导科目: 英语
+时间安排: 每周1次
+老师薪水: 100/h
+老师性别：女老师`)[0]?.teacherReq, '女老师');
+  check('「教员薪酬」是钱，不是要求', parseMessage(`家教编号: 2026112203
+学员地址: 天河岗顶
+辅导科目: 英语
+时间安排: 每周1次
+教员薪酬：160-200/2h`)[0]?.salaryHourly, 80);
+  check('「老师报酬」是钱（老逻辑会读成老师要求）', parseMessage(`家教编号: 2026112204
+学员地址: 天河岗顶
+辅导科目: 英语
+时间安排: 每周1次
+老师报酬：80一个小时`)[0]?.salaryHourly, 80);
+
+  /* 放宽的边界：限定词最多 2 个字，否则 T5 的通告行会被当字段 */
+  check('「信息费收取标准」仍是噪声，不是字段', readFieldLine('【信息费收取标准】（信息费只收一次）：'), null);
+  check('它也没被当成字段行', looksLikeFieldLine('【信息费收取标准】（信息费只收一次）：'), false);
+  check('2 个字的限定词仍然认（薪资范围 / 师资要求）', [readFieldLine('薪资范围：180-200元/次')?.key, readFieldLine('师资要求：女大学生')?.key], ['salary', 'teacherReq']);
 }
 
 console.log(
